@@ -5,12 +5,14 @@ ENV TZ=Europe/Rome \
 	LC_ALL=it_IT.UTF-8 \
 	LANGUAGE=it_IT:it \
 	JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
-	PATH="/usr/lib/jvm/java-21-openjdk/bin:${PATH}"
+	VIRTUAL_ENV=/opt/venv \
+	PATH="/opt/venv/bin:/usr/lib/jvm/java-21-openjdk/bin:${PATH}"
 
 RUN set -eux; \
 	apk add --no-cache \
 		bash \
 		bash-completion \
+		bat \
 		bind-tools \
 		bridge-utils \
 		build-base \
@@ -20,16 +22,20 @@ RUN set -eux; \
 		curl \
 		direnv \
 		ethtool \
+		fd \
+		fzf \
 		fuse \
 		fuse3 \
 		g++ \
 		gcc \
+		github-cli \
 		git \
 		go \
 		iftop \
 		iperf3 \
 		iproute2 \
 		iputils \
+		jq \
 		just \
 		linux-headers \
 		lsof \
@@ -48,16 +54,25 @@ RUN set -eux; \
 		npm \
 		openjdk21-jdk \
 		py3-pip \
+		py3-virtualenv \
 		python3 \
+		python3-dev \
+		ripgrep \
 		rust \
+		shellcheck \
+		shfmt \
 		socat \
 		strace \
 		sudo \
 		tcpdump \
+		tmux \
 		traceroute \
 		tree \
 		tzdata \
-		unzip; \
+		unzip \
+		yq; \
+	python3 -m venv /opt/venv; \
+	/opt/venv/bin/pip install --upgrade pip setuptools wheel; \
 	ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime; \
 	echo "Europe/Rome" > /etc/timezone; \
 	for f in /etc/fuse.conf /etc/fuse3.conf; do \
@@ -70,7 +85,7 @@ RUN set -eux; \
 	done; \
 	printf 'export TZ=Europe/Rome\nexport LANG=it_IT.UTF-8\nexport LC_ALL=it_IT.UTF-8\nexport LANGUAGE=it_IT:it\n' > /etc/profile.d/10locale.sh; \
 	printf 'command -v direnv >/dev/null 2>&1 && eval "$(direnv hook bash)"\n' > /etc/profile.d/20direnv.sh; \
-	npm install -g typescript @angular/cli pm2 pm2-logrotate; \
+	npm install -g prettier eslint typescript @angular/cli pm2 pm2-logrotate; \
 	apkArch="$(apk --print-arch)"; \
 	case "$apkArch" in \
 		x86_64) rcloneArch=amd64 ;; \

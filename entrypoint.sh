@@ -34,11 +34,56 @@ prepare_home() {
 		/home/alpine/.bash_aliases \
 		/home/alpine/.profile \
 		/home/alpine/.bash_profile 2>/dev/null || true
-	if [ ! -d /home/alpine/.pm2/modules/pm2-logrotate ] && [ -d /etc/skel/.pm2 ]; then
+	if [ -d /etc/skel/.pm2 ] && [ ! -d /home/alpine/.pm2 ]; then
 		as_root mkdir -p /home/alpine/.pm2
 		as_root cp -a /etc/skel/.pm2/. /home/alpine/.pm2/
-		as_root rm -f /home/alpine/.pm2/*.sock /home/alpine/.pm2/pm2.pid
 		as_root chown -R alpine:alpine /home/alpine/.pm2
+	fi
+	if [ -d /home/alpine/.pm2 ]; then
+		as_root rm -f /home/alpine/.pm2/*.sock /home/alpine/.pm2/*.pid /home/alpine/.pm2/pm2.pid 2>/dev/null || true
+		as_root chown -R alpine:alpine /home/alpine/.pm2 2>/dev/null || true
+	fi
+}
+
+cleanup_stale_runtime_state() {
+	echo "[dind-entrypoint] cleaning stale Docker/PM2 runtime state"
+	for pidfile in /var/run/docker.pid /run/docker.pid; do
+		if [ -f "$pidfile" ]; then
+			pid="$(cat "$pidfile" 2>/dev/null || true)"
+			if [ -n "${pid:-}" ] && [ "${pid}" != "0" ] && kill -0 "$pid" 2>/dev/null; then
+				echo "[dind-entrypoint] stopping stale docker pid ${pid} from $pidfile"
+				kill -TERM "$pid" 2>/dev/null || true
+				sleep 1
+				kill -KILL "$pid" 2>/dev/null || true
+			fi
+			rm -f "$pidfile" 2>/dev/null || true
+		fi
+	done
+
+	for sock in /var/run/docker.sock /run/docker.sock; do
+		if [ -S "$sock" ]; then
+			echo "[dind-entrypoint] removing stale docker socket $sock"
+			pidfile=""
+			for candidate in /var/run/docker.pid /run/docker.pid; do
+				if [ -f "$candidate" ]; then
+					pidfile="$candidate"
+					break
+				fi
+			done
+			if [ -n "$pidfile" ]; then
+				pid="$(cat "$pidfile" 2>/dev/null || true)"
+				if [ -n "${pid:-}" ] && [ "${pid}" != "0" ] && kill -0 "$pid" 2>/dev/null; then
+					continue
+				fi
+			fi
+			rm -f "$sock" 2>/dev/null || true
+		fi
+	done
+
+	if [ -d /home/alpine/.pm2 ]; then
+		echo "[dind-entrypoint] removing stale PM2 pid/socket files under /home/alpine/.pm2"
+		as_root rm -f /home/alpine/.pm2/*.sock /home/alpine/.pm2/*.pid /home/alpine/.pm2/pm2.pid 2>/dev/null || true
+		as_root chown -R alpine:alpine /home/alpine/.pm2 2>/dev/null || true
 	fi
 }
 
@@ -51,17 +96,21 @@ pm2_as_alpine() {
 }
 
 start_pm2() {
+	echo "[dind-entrypoint] starting PM2"
 	pm2_as_alpine pm2 ping >/dev/null 2>&1 || true
 	if [ -s /home/alpine/.pm2/dump.pm2 ]; then
+		echo "[dind-entrypoint] resurrecting PM2 dump"
 		pm2_as_alpine pm2 resurrect >/dev/null 2>&1 || true
 	fi
 	if ! pm2_as_alpine pm2 describe pm2-logrotate >/dev/null 2>&1; then
+		echo "[dind-entrypoint] installing pm2-logrotate"
 		pm2_as_alpine pm2 install pm2-logrotate >/dev/null 2>&1 || true
 	fi
 	pm2_as_alpine pm2 set pm2-logrotate:max_size 10M >/dev/null 2>&1 || true
 	pm2_as_alpine pm2 set pm2-logrotate:retain 7 >/dev/null 2>&1 || true
 	pm2_as_alpine pm2 set pm2-logrotate:compress true >/dev/null 2>&1 || true
 	pm2_as_alpine pm2 save >/dev/null 2>&1 || true
+	echo "[dind-entrypoint] PM2 startup complete"
 }
 
 fix_runtime() {
@@ -108,12 +157,15 @@ shutdown() {
 }
 
 prepare_home
+cleanup_stale_runtime_state
 
 if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
 	trap shutdown INT TERM
+	echo "[dind-entrypoint] launching Docker daemon"
 	as_root dockerd-entrypoint.sh "$@" &
 	DOCKERD_PID=$!
 	wait_docker
+	echo "[dind-entrypoint] Docker daemon ready on /var/run/docker.sock"
 	start_pm2
 	if [ -t 0 ]; then
 		run_as_alpine /bin/bash -l

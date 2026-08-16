@@ -1,0 +1,28 @@
+services:
+  dind:
+    image: ghcr.io/manprint/dind-official-full:${DIND_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dind-env
+    hostname: dind
+    privileged: true
+    stdin_open: true
+    tty: true
+    working_dir: /home/alpine
+    environment:
+      TZ: Europe/Rome
+      LANG: it_IT.UTF-8
+      LC_ALL: it_IT.UTF-8
+      LANGUAGE: it_IT:it
+      HOME: /home/alpine
+    volumes:
+      - docker:/var/lib/docker
+      - alpine-home:/home/alpine
+    ports:
+      - "2375:2375"
+      - "2376:2376"
+
+volumes:
+  docker:
+  alpine-home:

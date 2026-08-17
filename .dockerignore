@@ -1,6 +1,8 @@
 *
 !Dockerfile
+!Dockerfile.minimal
 !entrypoint.sh
+!entrypoint.minimal.sh
 !bashrc
 !bash_aliases
 !profile

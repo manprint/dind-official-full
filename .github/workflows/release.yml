@@ -19,24 +19,45 @@ env:
 
 jobs:
   build:
-    name: build-${{ matrix.name }}
+    name: build-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: amd64
+          - variant: full
+            image_suffix: ""
+            arch: amd64
             runner: ubuntu-24.04
             platform: linux/amd64
-          - name: arm64
+            dockerfile: Dockerfile
+          - variant: full
+            image_suffix: ""
+            arch: arm64
             runner: ubuntu-24.04-arm
             platform: linux/arm64
+            dockerfile: Dockerfile
+          - variant: minimal
+            image_suffix: "-minimal"
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            dockerfile: Dockerfile.minimal
+          - variant: minimal
+            image_suffix: "-minimal"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: Dockerfile.minimal
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Lowercase image name
         run: echo "IMAGE_LC=${REGISTRY}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Add image variant
+        run: echo "IMAGE_LC=${IMAGE_LC}${{ matrix.image_suffix }}" >> "$GITHUB_ENV"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -59,14 +80,14 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.IMAGE_LC }},push-by-digest=true,name-canonical=true,push=true
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.platform }}
 
       - name: Export digest
         run: |
@@ -77,28 +98,34 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.name }}
+          name: digests-${{ matrix.variant }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
-    name: manifest
+    name: manifest-${{ matrix.variant }}
     runs-on: ubuntu-24.04
     needs: build
     outputs:
-      image: ${{ steps.names.outputs.image }}
       version: ${{ steps.meta.outputs.version }}
+    strategy:
+      matrix:
+        include:
+          - variant: full
+            image_suffix: ""
+          - variant: minimal
+            image_suffix: "-minimal"
     steps:
       - name: Lowercase image name
         id: names
-        run: echo "image=${REGISTRY}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        run: echo "image=${REGISTRY}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')${{ matrix.image_suffix }}" >> "$GITHUB_OUTPUT"
 
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/digests
-          pattern: digests-*
+          pattern: digests-${{ matrix.variant }}-*
           merge-multiple: true
 
       - name: Login to GHCR
@@ -140,32 +167,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Stamp bind compose
+      - name: Stamp bind composes
         env:
-          IMAGE: ${{ needs.merge.outputs.image }}
+          IMAGE_BASE: ghcr.io/${{ github.repository }}
           VERSION: ${{ needs.merge.outputs.version }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import os
-          image = f"{os.environ['IMAGE']}:{os.environ['VERSION']}"
-          p = Path("docker-compose.bind.yml")
-          out = []
-          skip = False
-          for line in p.read_text().splitlines(True):
+          base = os.environ["IMAGE_BASE"].lower()
+          version = os.environ["VERSION"]
+          for filename, suffix in (
+            ("docker-compose.bind.yml", ""),
+            ("docker-compose.minimal.bind.yml", "-minimal"),
+          ):
+            image = f"{base}{suffix}:{version}"
+            p = Path(filename)
+            out = []
+            skip = False
+            for line in p.read_text().splitlines(True):
               if line.startswith("    build:"):
-                  skip = True
-                  continue
+                skip = True
+                continue
               if skip:
-                  if line.startswith("    ") and not line.startswith("      "):
-                      skip = False
-                  else:
-                      continue
-              if line.startswith("    image:"):
-                  out.append(f"    image: {image}\n")
+                if line.startswith("    ") and not line.startswith("      "):
+                  skip = False
+                else:
                   continue
+              if line.startswith("    image:"):
+                out.append(f"    image: {image}\n")
+                continue
               out.append(line)
-          p.write_text("".join(out))
+            p.write_text("".join(out))
           PY
 
       - name: Create GitHub Release
@@ -174,5 +207,7 @@ jobs:
           generate_release_notes: true
           files: |
             docker-compose.bind.yml
+            docker-compose.minimal.bind.yml
             docker-compose.yml
             Dockerfile
+            Dockerfile.minimal

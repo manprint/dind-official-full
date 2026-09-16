@@ -92,5 +92,6 @@ DIND_TAG=1.0.0 docker compose up -d
 - bashrc Ubuntu-like per `alpine` e `root` (prompt git, alias `ll`/`tree1`/`tree2`/`tree3`)
 - `pm2` + `pm2-logrotate` avviati all'avvio
 - `rclone` ultima release, fuse `user_allow_other`
+- `tar` e `coreutils` GNU al posto degli applet busybox
 
 La versione minimal mantiene la logica DinD, l'utente `alpine`, sudo, rclone, fuse e la gestione dei bind mount, ma non installa Rust, GitHub CLI, toolchain C/C++, Node.js/npm, PM2, Java, Python, TypeScript o Angular CLI.

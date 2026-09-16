@@ -64,6 +64,7 @@ RUN set -eux; \
 		socat \
 		strace \
 		sudo \
+		tar \
 		tcpdump \
 		tmux \
 		traceroute \

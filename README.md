@@ -1,6 +1,6 @@
 # dind-env
 
-`docker:29.7.2-dind` + toolchain di sviluppo. `dockerd` resta root (comportamento DinD); la sessione parte come `alpine` (uid/gid 1000).
+`docker:29.8.1-dind` + toolchain di sviluppo. `dockerd` resta root (comportamento DinD); la sessione parte come `alpine` (uid/gid 1000).
 
 Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativamente su Linux, macOS e Windows con Docker Desktop, OrbStack o WSL2.
 

@@ -7,8 +7,12 @@ services:
     container_name: dind-env
     hostname: dind
     privileged: true
-    stdin_open: true
-    tty: true
+    # Daemon path only: with a TTY the entrypoint would drop into an
+    # interactive login shell instead of supervise(), and a foreground shell
+    # blocks POSIX sh trap delivery, so `docker stop` could not be graceful.
+    # `compose run` allocates its own TTY, so the interactive path still works.
+    stdin_open: false
+    tty: false
     working_dir: /home/alpine
     environment:
       TZ: Europe/Rome
@@ -19,6 +23,9 @@ services:
     volumes:
       - ${DOCKER_DATA:-./data/docker}:/var/lib/docker
       - ${ALPINE_HOME:-./data/alpine-home}:/home/alpine
+    stop_grace_period: 60s
     ports:
-      - "2375:2375"
-      - "2376:2376"
+      # With DOCKER_TLS_CERTDIR set (dind default) dockerd listens on 2376
+      # only, so 2375 has no listener. Kept on loopback: the Docker API is
+      # root-equivalent and must not be reachable from the network.
+      - "127.0.0.1:2376:2376"

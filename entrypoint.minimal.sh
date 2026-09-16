@@ -43,11 +43,11 @@ cleanup_stale_runtime_state() {
 			pid="$(cat "$pidfile" 2>/dev/null || true)"
 			if [ -n "${pid:-}" ] && [ "${pid}" != "0" ] && kill -0 "$pid" 2>/dev/null; then
 				echo "[dind-entrypoint] stopping stale docker pid ${pid} from $pidfile"
-				kill -TERM "$pid" 2>/dev/null || true
+				as_root kill -TERM "$pid" 2>/dev/null || true
 				sleep 1
-				kill -KILL "$pid" 2>/dev/null || true
+				as_root kill -KILL "$pid" 2>/dev/null || true
 			fi
-			rm -f "$pidfile" 2>/dev/null || true
+			as_root rm -f "$pidfile" 2>/dev/null || true
 		fi
 	done
 
@@ -67,7 +67,7 @@ cleanup_stale_runtime_state() {
 					continue
 				fi
 			fi
-			rm -f "$sock" 2>/dev/null || true
+			as_root rm -f "$sock" 2>/dev/null || true
 		fi
 	done
 }
@@ -77,8 +77,19 @@ fix_runtime() {
 		as_root chgrp docker /var/run/docker.sock 2>/dev/null || true
 		as_root chmod 660 /var/run/docker.sock 2>/dev/null || true
 	fi
+	# Only the client bundle is meant to be readable by non-root; the CA and
+	# server private keys stay 0600 as the upstream dind entrypoint created
+	# them. A recursive a+rX here would expose the CA key and let any reader
+	# mint client certs the daemon trusts.
 	if [ -d /certs ]; then
-		as_root chmod -R a+rX /certs 2>/dev/null || true
+		as_root chmod 0755 /certs 2>/dev/null || true
+		if [ -d /certs/client ]; then
+			as_root chmod 0755 /certs/client 2>/dev/null || true
+			as_root chmod 0644 \
+				/certs/client/ca.pem \
+				/certs/client/cert.pem \
+				/certs/client/key.pem 2>/dev/null || true
+		fi
 	fi
 }
 
@@ -96,23 +107,66 @@ wait_docker() {
 	return 0
 }
 
-run_as_alpine() {
+alpine_env() {
 	export HOME=/home/alpine
 	export USER=alpine
 	export LOGNAME=alpine
 	export SHELL=/bin/bash
 	cd /home/alpine
+}
+
+# Replaces the current process. Only for the dispatch paths that run a command
+# instead of supervising a backgrounded daemon.
+run_as_alpine() {
+	alpine_env
 	if [ "$UID_NOW" = "0" ]; then
 		exec sudo -u alpine -H -E -- "$@"
 	fi
 	exec "$@"
 }
 
-shutdown() {
-	if [ -n "$DOCKERD_PID" ]; then
-		kill "$DOCKERD_PID" 2>/dev/null || true
-		wait "$DOCKERD_PID" 2>/dev/null || true
+# Runs as a child, so PID 1 stays this script and keeps its INT/TERM trap.
+run_as_alpine_child() {
+	alpine_env
+	if [ "$UID_NOW" = "0" ]; then
+		sudo -u alpine -H -E -- "$@"
+	else
+		"$@"
 	fi
+}
+
+# dockerd runs as root behind sudo, so $DOCKERD_PID is only the forked helper
+# shell and an unprivileged kill against it fails with EPERM. Signal the daemon
+# itself by pidfile, escalating through sudo.
+shutdown() {
+	echo "[dind-entrypoint] stopping Docker daemon"
+	for pidfile in /run/docker.pid /var/run/docker.pid; do
+		[ -f "$pidfile" ] || continue
+		pid="$(cat "$pidfile" 2>/dev/null || true)"
+		if [ -n "${pid:-}" ] && [ "${pid}" != "0" ]; then
+			as_root kill -TERM "$pid" 2>/dev/null || true
+		fi
+	done
+	as_root pkill -x dockerd 2>/dev/null || true
+	i=0
+	while [ "$i" -lt 60 ] && pgrep -x dockerd >/dev/null 2>&1; do
+		i=$((i + 1))
+		sleep 0.5
+	done
+	echo "[dind-entrypoint] Docker daemon stopped"
+	exit 0
+}
+
+# PID 1 must keep running this script. An exec'd sleep/bash installs no SIGTERM
+# handler, and the kernel discards unhandled signals sent to PID 1, so the trap
+# above would never fire: `docker stop` would hang for its grace period and
+# then SIGKILL dockerd, which is what leaves the stale state cleaned up above.
+supervise() {
+	while kill -0 "$DOCKERD_PID" 2>/dev/null; do
+		wait "$DOCKERD_PID" 2>/dev/null || true
+	done
+	echo "[dind-entrypoint] Docker daemon exited"
+	shutdown
 }
 
 prepare_home
@@ -126,12 +180,13 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
 	wait_docker
 	echo "[dind-entrypoint] Docker daemon ready on /var/run/docker.sock"
 	if [ -t 0 ]; then
-		run_as_alpine /bin/bash -l
+		run_as_alpine_child /bin/bash -l || true
+		shutdown
 	fi
-	run_as_alpine sleep infinity
+	supervise
 fi
 
-if [ "$1" = "dockerd" ]; then
+if [ "${1:-}" = "dockerd" ]; then
 	if [ "$UID_NOW" = "0" ]; then
 		exec dockerd-entrypoint.sh "$@"
 	fi

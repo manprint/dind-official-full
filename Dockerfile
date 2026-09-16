@@ -1,4 +1,4 @@
-FROM docker:29.7.2-dind
+FROM docker:29.8.1-dind
 
 ENV TZ=Europe/Rome \
 	LANG=it_IT.UTF-8 \

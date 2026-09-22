@@ -32,6 +32,8 @@ wget -qO docker-compose.minimal.bind.yml https://github.com/manprint/dind-offici
 docker compose -f docker-compose.minimal.bind.yml up -d
 ```
 
+I compose della release hanno l'immagine fissata alla versione e niente blocco `build:`; c'è anche `docker-compose.yml` (named volumes).
+
 ## Avvio
 
 ```bash
@@ -44,6 +46,8 @@ TTY interattivo:
 ```bash
 docker compose run --rm dind
 ```
+
+Con il TTY l'output di `dockerd` va in `/var/log/dockerd.log` invece che nel terminale. `docker compose run` usa gli stessi volumi del servizio: se l'istanza di `up` è attiva, viene rifiutato (vedi [Lock sul data-root](#lock-sul-data-root)).
 
 ## Volumi
 
@@ -82,16 +86,87 @@ Tag immagine:
 DIND_TAG=1.0.0 docker compose up -d
 ```
 
+Un dotfile in `/home/alpine` senza il marker `dind-env-` (per esempio in una home portata da fuori) viene spostato in `<nome>.dind-env-backup.<data>` e sostituito da quello dell'immagine, una volta sola.
+
+## Variabili
+
+| Variabile | Default | Uso |
+| --- | --- | --- |
+| `DIND_TAG` | `latest` | tag dell'immagine |
+| `DIND_NAME` | `dind-env` / `dind-env-minimal` | nome del container |
+| `DIND_TLS_PORT` | `2376` | porta host (solo `127.0.0.1`) per l'API TLS |
+| `DIND_DNS` | vuoto | DNS dei container interni, es. `"10.0.0.2 10.0.0.3"` o separati da virgola |
+| `DOCKER_DATA` | `./data/docker` | solo bind: data-root di `dockerd` |
+| `ALPINE_HOME` | `./data/alpine-home` | solo bind: home di `alpine` |
+
+Senza `DIND_DNS` i container interni sulla bridge di default ripiegano su `8.8.8.8`/`8.8.4.4`: in reti che li bloccano, impostare i DNS aziendali. Le voci che non sono indirizzi IP vengono scartate con un warning, perché `dockerd` rifiuterebbe di partire.
+
+## Più istanze
+
+Ogni istanza ha bisogno di nome, porta e dati propri:
+
+```bash
+DIND_NAME=dind-b DIND_TLS_PORT=2377 DOCKER_DATA=/srv/dind-b/docker ALPINE_HOME=/srv/dind-b/home \
+  docker compose -p dind-b -f docker-compose.bind.yml up -d
+```
+
+Con `docker-compose.yml` bastano `-p`, `DIND_NAME` e `DIND_TLS_PORT`: i named volumes sono già separati per progetto.
+
+### Lock sul data-root
+
+`dockerd` prende un lock esclusivo su `/var/lib/docker/.dind-env.lock` per tutta la sua vita. Un secondo container sullo stesso data-root (`compose run` accanto a `up`, un progetto copiato con lo stesso `DOCKER_DATA`) esce con codice 75 e questo errore nel log, senza toccare l'istanza attiva:
+
+```text
+[dind-entrypoint] ERROR: another dockerd holds /var/lib/docker/.dind-env.lock: this /var/lib/docker is in use by another container
+```
+
+Due `dockerd` sullo stesso `/var/lib/docker` lo corromperebbero. Il lock lo rilascia il kernel quando il processo muore: uno spegnimento brutale non lo lascia appeso.
+
+## Resilienza
+
+Pensato per staging che deve ripartire da solo dopo reboot, crash o spegnimento brutale dell'host.
+
+- `restart: unless-stopped`: il daemon Docker dell'host riavvia il container al boot e dopo un crash, con qualunque codice di uscita.
+- All'avvio lo stato runtime rimasto da uno stop non pulito (`/run/docker`, pidfile, socket) viene ripulito: senza, dopo un `kill` o una caduta di corrente `dockerd` spesso non ripartiva.
+- `docker stop` è pulito: `dockerd` riceve un solo SIGTERM e ferma i container interni prima di uscire (`stop_grace_period: 60s`).
+- Se `dockerd` muore da solo il container esce con codice diverso da 0 e viene riavviato; l'healthcheck (`docker version`) lo segna `unhealthy` se il daemon non risponde.
+
+Da fare sull'host e nei progetti interni:
+
+- il daemon Docker dell'host deve partire al boot: `sudo systemctl enable docker`;
+- i container **interni** tornano su solo con una loro restart policy (`--restart unless-stopped` o `restart:` nel compose interno);
+- se `DOCKER_DATA` sta su un disco montato al boot, fare partire Docker solo dopo il mount, altrimenti il container riparte su una directory vuota creata al posto del disco: `sudo systemctl edit docker` e aggiungere
+
+  ```ini
+  [Unit]
+  RequiresMountsFor=/percorso/del/disco
+  ```
+
+  Rovescio della medaglia: se il disco non si monta, sull'host non parte nessun container;
+
+- con una VM, la cache del disco virtuale deve rispettare i flush (es. niente `cache=unsafe` in QEMU/Proxmox): altrimenti una caduta di corrente può corrompere `/var/lib/docker` qualunque cosa faccia il container.
+
+## Test
+
+```bash
+docker build -t dind-test .
+tests/smoke.sh dind-test 3
+```
+
+Avvio, DNS, lock, `docker stop`, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine prima di pubblicarne i tag.
+
 ## Note
 
 - persistenza Docker full in `/var/lib/docker` (overlayfs/containerd snapshotter incluso)
-- release GitHub su tag `vX.Y.Z`
+- release GitHub su tag `vX.Y.Z`; `latest` solo sulla versione più alta
 - `privileged: true` è obbligatorio per DinD
+- **sicurezza**: un container privilegiato non è un confine di sicurezza. Chi controlla il container, o l'API Docker interna, controlla l'host; isola ambienti, non utenti non fidati
 - `alpine` ha sudo senza password
+- log rotation: 10 MB × 5 file sia per il log del container (output di `dockerd`) sia per i container interni. Se si monta un `/etc/docker/daemon.json` con `log-opts`, togliere `command:` dal compose: `dockerd` rifiuta la stessa opzione da due fonti
 - timezone `Europe/Rome`, locale `it_IT.UTF-8`
-- bashrc Ubuntu-like per `alpine` e `root` (prompt git, alias `ll`/`tree1`/`tree2`/`tree3`)
-- `pm2` + `pm2-logrotate` avviati all'avvio
-- `rclone` ultima release, fuse `user_allow_other`
+- bashrc Ubuntu-like per `alpine` e `root` (prompt git a colori, alias `ll`/`tree1`/`tree2`/`tree3`); `~/go/bin`, `~/.cargo/bin`, `~/bin`, `~/.local/bin` nel `PATH`
+- `pm2` + `pm2-logrotate` avviati all'avvio; le app salvate con `pm2 save` vengono ripristinate e fermate in modo pulito allo stop
+- `rclone` ultima release (checksum verificato), fuse `user_allow_other`
 - `tar` e `coreutils` GNU al posto degli applet busybox
 
 La versione minimal mantiene la logica DinD, l'utente `alpine`, sudo, rclone, fuse e la gestione dei bind mount, ma non installa Rust, GitHub CLI, toolchain C/C++, Node.js/npm, PM2, Java, Python, TypeScript o Angular CLI.

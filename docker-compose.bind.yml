@@ -4,9 +4,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dind-env
+    # DIND_NAME, DIND_TLS_PORT and the data paths let several instances
+    # run side by side.
+    container_name: ${DIND_NAME:-dind-env}
     hostname: dind
     privileged: true
+    # Hard stops (power loss, host crash, OOM) must bring staging back on
+    # their own: the host daemon restarts the container at boot and after
+    # a crash. Unlike on-failure, it does not depend on the exit code.
+    restart: unless-stopped
     # Daemon path only: with a TTY the entrypoint would drop into an
     # interactive login shell instead of supervise(), and a foreground shell
     # blocks POSIX sh trap delivery, so `docker stop` could not be graceful.
@@ -14,18 +20,36 @@ services:
     stdin_open: false
     tty: false
     working_dir: /home/alpine
+    # Default log rotation for the inner containers. Drop it when mounting
+    # an /etc/docker/daemon.json with log-opts: dockerd refuses a setting
+    # given both as a flag and in the file.
+    command: ["--log-opt", "max-size=10m", "--log-opt", "max-file=5"]
     environment:
       TZ: Europe/Rome
       LANG: it_IT.UTF-8
       LC_ALL: it_IT.UTF-8
       LANGUAGE: it_IT:it
-      HOME: /home/alpine
+      # Resolvers for the inner containers, e.g. "10.0.0.2 10.0.0.3". Unset,
+      # those on the inner default bridge fall back to 8.8.8.8/8.8.4.4.
+      DIND_DNS: ${DIND_DNS:-}
     volumes:
       - ${DOCKER_DATA:-./data/docker}:/var/lib/docker
       - ${ALPINE_HOME:-./data/alpine-home}:/home/alpine
     stop_grace_period: 60s
+    # dockerd writes to this container's log: rotate it on the host.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "docker", "version"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
     ports:
       # With DOCKER_TLS_CERTDIR set (dind default) dockerd listens on 2376
       # only, so 2375 has no listener. Kept on loopback: the Docker API is
       # root-equivalent and must not be reachable from the network.
-      - "127.0.0.1:2376:2376"
+      - "127.0.0.1:${DIND_TLS_PORT:-2376}:2376"

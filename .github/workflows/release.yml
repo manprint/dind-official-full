@@ -5,9 +5,9 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
+# Jobs raise what they need; nothing else gets write access.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -18,9 +18,62 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-24.04
+    outputs:
+      latest: ${{ steps.latest.outputs.latest }}
+      rclone: ${{ steps.rclone.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # Only the highest release moves `latest` (image tag and GitHub
+      # release): a patch tag pushed for an older line must not roll it back.
+      - name: Is this the highest release
+        id: latest
+        run: |
+          highest="$(git tag --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          if [ "$highest" = "$GITHUB_REF_NAME" ]; then latest=true; else latest=false; fi
+          echo "highest release tag: $highest, this one: $GITHUB_REF_NAME, latest: $latest"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      # Resolved once, so that every platform build ships the same rclone.
+      - name: Resolve rclone version
+        id: rclone
+        run: |
+          version="$(curl -fsSL https://downloads.rclone.org/version.txt | awk '{print $2}')"
+          case "$version" in
+            v[0-9]*) ;;
+            *) echo "unexpected rclone version: '$version'" >&2; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: shellcheck
+        run: shellcheck entrypoint.sh entrypoint.minimal.sh tests/smoke.sh
+
+      - name: Compose files
+        run: |
+          for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml; do
+            docker compose -f "$f" config -q
+          done
+
   build:
     name: build-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +104,7 @@ jobs:
             dockerfile: Dockerfile.minimal
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Lowercase image name
         run: echo "IMAGE_LC=${REGISTRY}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
@@ -60,34 +113,41 @@ jobs:
         run: echo "IMAGE_LC=${IMAGE_LC}${{ matrix.image_suffix }}" >> "$GITHUB_ENV"
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE_LC }}
+          tags: |
+            type=semver,pattern={{version}}
 
+      # From scratch on every release: with a layer cache the `apk add` layer
+      # never changes until the Dockerfile does, so releases would keep
+      # shipping the same packages without their security fixes.
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ./${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DIND_RCLONE_VERSION=${{ needs.prepare.outputs.rclone }}
+          no-cache: true
+          pull: true
           outputs: type=image,name=${{ env.IMAGE_LC }},push-by-digest=true,name-canonical=true,push=true
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.platform }}
 
       - name: Export digest
         run: |
@@ -96,17 +156,75 @@ jobs:
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digests-${{ matrix.variant }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
 
+  # The exact digest that would be tagged, on its native runner. Nothing is
+  # tagged unless all four pass.
+  smoke:
+    name: smoke-${{ matrix.variant }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: full
+            image_suffix: ""
+            arch: amd64
+            runner: ubuntu-24.04
+          - variant: full
+            image_suffix: ""
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - variant: minimal
+            image_suffix: "-minimal"
+            arch: amd64
+            runner: ubuntu-24.04
+          - variant: minimal
+            image_suffix: "-minimal"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Lowercase image name
+        run: echo "IMAGE_LC=${REGISTRY}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')${{ matrix.image_suffix }}" >> "$GITHUB_ENV"
+
+      - name: Download digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: digests-${{ matrix.variant }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke test
+        run: |
+          image="${IMAGE_LC}@sha256:$(ls "${{ runner.temp }}/digests")"
+          docker pull "$image"
+          bash tests/smoke.sh "$image" 3
+
   merge:
     name: manifest-${{ matrix.variant }}
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [prepare, lint, smoke]
+    permissions:
+      contents: read
+      packages: write
     outputs:
       version: ${{ steps.meta.outputs.version }}
     strategy:
@@ -122,36 +240,41 @@ jobs:
         run: echo "image=${REGISTRY}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')${{ matrix.image_suffix }}" >> "$GITHUB_OUTPUT"
 
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-${{ matrix.variant }}-*
           merge-multiple: true
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
+      # latest=false: the action would otherwise add `latest` to every semver
+      # tag on its own; the raw tag below applies it to the highest only.
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ steps.names.outputs.image }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=tag
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.latest == 'true' }}
 
       - name: Create manifest list
         working-directory: ${{ runner.temp }}/digests
         run: |
+          # shellcheck disable=SC2046 # split on purpose: one -t per tag, one ref per digest
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ steps.names.outputs.image }}@sha256:%s ' *)
@@ -162,12 +285,16 @@ jobs:
   release:
     name: github-release
     runs-on: ubuntu-24.04
-    needs: merge
+    needs: [prepare, merge]
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Stamp bind composes
+      # Release assets are for pulling: strip the build: block (its context
+      # is not in the download) and pin image: to this version.
+      - name: Stamp composes
         env:
           IMAGE_BASE: ghcr.io/${{ github.repository }}
           VERSION: ${{ needs.merge.outputs.version }}
@@ -178,6 +305,7 @@ jobs:
           base = os.environ["IMAGE_BASE"].lower()
           version = os.environ["VERSION"]
           for filename, suffix in (
+            ("docker-compose.yml", ""),
             ("docker-compose.bind.yml", ""),
             ("docker-compose.minimal.bind.yml", "-minimal"),
           ):
@@ -198,16 +326,17 @@ jobs:
                 out.append(f"    image: {image}\n")
                 continue
               out.append(line)
+            assert not any(l.startswith("    build:") for l in out), filename
+            assert f"    image: {image}\n" in out, filename
             p.write_text("".join(out))
           PY
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
+          make_latest: ${{ needs.prepare.outputs.latest }}
           files: |
+            docker-compose.yml
             docker-compose.bind.yml
             docker-compose.minimal.bind.yml
-            docker-compose.yml
-            Dockerfile
-            Dockerfile.minimal

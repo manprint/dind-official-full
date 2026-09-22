@@ -1,5 +1,11 @@
 FROM docker:29.8.1-dind
 
+# "current" resolves to the newest rclone at build time; CI resolves it once
+# and passes the same version to every platform build. Not RCLONE_VERSION:
+# rclone reads RCLONE_* variables as flag defaults and takes that one for
+# --version, so `rclone version` below would fail.
+ARG DIND_RCLONE_VERSION=current
+
 ENV TZ=Europe/Rome \
 	LANG=it_IT.UTF-8 \
 	LC_ALL=it_IT.UTF-8 \
@@ -7,6 +13,10 @@ ENV TZ=Europe/Rome \
 	JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
 	VIRTUAL_ENV=/opt/venv \
 	PATH="/opt/venv/bin:/usr/lib/jvm/java-21-openjdk/bin:${PATH}"
+
+# docker-init (tini) is not PID 1 here, the entrypoint is: as a subreaper it
+# still reaps dockerd's orphans, and it stops warning that it cannot.
+ENV TINI_SUBREAPER=1
 
 RUN set -eux; \
 	apk add --no-cache \
@@ -23,11 +33,10 @@ RUN set -eux; \
 		direnv \
 		ethtool \
 		fd \
+		flock \
 		fzf \
 		fuse \
 		fuse3 \
-		g++ \
-		gcc \
 		github-cli \
 		git \
 		go \
@@ -39,12 +48,11 @@ RUN set -eux; \
 		just \
 		linux-headers \
 		lsof \
-		make \
-		musl-dev \
 		musl-locales \
 		musl-locales-lang \
 		mtr \
 		nano \
+		ncurses \
 		net-tools \
 		netcat-openbsd \
 		nftables \
@@ -76,17 +84,13 @@ RUN set -eux; \
 	/opt/venv/bin/pip install --upgrade pip setuptools wheel; \
 	ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime; \
 	echo "Europe/Rome" > /etc/timezone; \
-	for f in /etc/fuse.conf /etc/fuse3.conf; do \
-		if [ -f "$f" ]; then \
-			sed -i 's/^#user_allow_other/user_allow_other/' "$f"; \
-			grep -q '^user_allow_other' "$f" || echo 'user_allow_other' >> "$f"; \
-		else \
-			printf 'user_allow_other\n' > "$f"; \
-		fi; \
-	done; \
+	touch /etc/fuse.conf; \
+	sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf; \
+	grep -q '^user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fuse.conf; \
 	printf 'export TZ=Europe/Rome\nexport LANG=it_IT.UTF-8\nexport LC_ALL=it_IT.UTF-8\nexport LANGUAGE=it_IT:it\n' > /etc/profile.d/10locale.sh; \
-	printf 'command -v direnv >/dev/null 2>&1 && eval "$(direnv hook bash)"\n' > /etc/profile.d/20direnv.sh; \
-	npm install -g prettier eslint typescript @angular/cli pm2 pm2-logrotate; \
+	printf '# /etc/profile resets PATH: restore the image one (venv, JDK) for login shells.\nexport PATH="%s"\n' "$PATH" > /etc/profile.d/00dind-path.sh; \
+	printf 'if [ -n "${BASH_VERSION:-}" ] && command -v direnv >/dev/null 2>&1; then eval "$(direnv hook bash)"; fi\n' > /etc/profile.d/20direnv.sh; \
+	npm install -g prettier eslint typescript @angular/cli pm2; \
 	apkArch="$(apk --print-arch)"; \
 	case "$apkArch" in \
 		x86_64) rcloneArch=amd64 ;; \
@@ -94,18 +98,33 @@ RUN set -eux; \
 		armv7) rcloneArch=arm-v7 ;; \
 		*) echo >&2 "unsupported arch for rclone: $apkArch"; exit 1 ;; \
 	esac; \
-	wget -O /tmp/rclone.zip "https://downloads.rclone.org/rclone-current-linux-${rcloneArch}.zip"; \
-	unzip -o /tmp/rclone.zip -d /tmp; \
-	install -m 0755 /tmp/rclone-*-linux-${rcloneArch}/rclone /usr/local/bin/rclone; \
-	rm -rf /tmp/rclone.zip /tmp/rclone-*-linux-${rcloneArch}; \
+	rcloneVersion="$DIND_RCLONE_VERSION"; \
+	if [ "$rcloneVersion" = current ]; then \
+		rcloneVersion="$(wget -qO- https://downloads.rclone.org/version.txt | awk '{print $2}')"; \
+	fi; \
+	rcloneDir="rclone-${rcloneVersion}-linux-${rcloneArch}"; \
+	wget -O "/tmp/${rcloneDir}.zip" "https://downloads.rclone.org/${rcloneVersion}/${rcloneDir}.zip"; \
+	wget -O /tmp/rclone.sha256sums "https://downloads.rclone.org/${rcloneVersion}/SHA256SUMS"; \
+	(cd /tmp && grep " ${rcloneDir}\.zip\$" rclone.sha256sums | sha256sum -c -); \
+	unzip -o "/tmp/${rcloneDir}.zip" -d /tmp; \
+	install -m 0755 "/tmp/${rcloneDir}/rclone" /usr/local/bin/rclone; \
+	rm -rf "/tmp/${rcloneDir}.zip" "/tmp/${rcloneDir}" /tmp/rclone.sha256sums; \
 	rclone version; \
 	addgroup -g 1000 alpine; \
 	adduser -D -u 1000 -G alpine -h /home/alpine -s /bin/bash alpine; \
 	if ! getent group docker >/dev/null; then addgroup -S docker; fi; \
 	addgroup alpine docker; \
 	if getent group fuse >/dev/null; then addgroup alpine fuse; fi; \
-	printf 'Defaults:alpine !env_reset\nDefaults:alpine secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"\nalpine ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/alpine; \
+	chown -R alpine:alpine /opt/venv; \
+	printf '%s\n' \
+		'# !env_reset: the entrypoint hands DOCKER_TLS_CERTDIR & co. to dockerd-entrypoint.sh.' \
+		'# always_set_home: with the environment kept, root would inherit HOME=/home/alpine.' \
+		'Defaults:alpine !env_reset' \
+		'Defaults:alpine always_set_home' \
+		'Defaults:alpine secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+		'alpine ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/alpine; \
 	chmod 0440 /etc/sudoers.d/alpine; \
+	visudo -cf /etc/sudoers.d/alpine; \
 	sudo -u alpine -H pm2 install pm2-logrotate; \
 	sudo -u alpine -H pm2 set pm2-logrotate:max_size 10M; \
 	sudo -u alpine -H pm2 set pm2-logrotate:retain 7; \

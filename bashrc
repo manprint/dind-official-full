@@ -101,11 +101,6 @@ else
     alias egrep='egrep --color=auto'
 fi
 
-# some more ls aliases
-alias ll='ls -alFh'
-alias la='ls -A'
-alias l='ls -CF'
-
 # Alias definitions.
 # You may want to put all your additions into a separate file like
 # ~/.bash_aliases, instead of adding them here directly.
@@ -121,6 +116,17 @@ if ! shopt -oq posix; then
     . /etc/bash_completion
   fi
 fi
+
+# user tool dirs (go install, cargo install, pip install --user, ~/bin),
+# each added once however deep shells nest
+for dir in "$HOME/go/bin" "$HOME/.cargo/bin" "$HOME/bin" "$HOME/.local/bin"; do
+    case ":$PATH:" in
+        *":$dir:"*) ;;
+        *) PATH="$dir:$PATH" ;;
+    esac
+done
+unset dir
+export PATH
 
 export TZ="${TZ:-Europe/Rome}"
 export LANG="${LANG:-it_IT.UTF-8}"

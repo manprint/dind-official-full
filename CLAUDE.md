@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Docker-in-Docker development image built on `docker:29.8.1-dind`. No application code — the deliverables are two Dockerfiles, two shell entrypoints, three dotfiles, three compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full` and `...-full-minimal`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
+Docker-in-Docker development image built on `docker:29.8.2-dind`. No application code — the deliverables are two Dockerfiles, two shell entrypoints, three dotfiles, three compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full` and `...-full-minimal`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
 
 README is in Italian; container locale/timezone are `it_IT.UTF-8` / `Europe/Rome`.
 
@@ -121,6 +121,8 @@ All three compose files set `restart: unless-stopped`, so the host daemon brings
 Same base, same user/sudo/rclone/fuse/bind-mount logic, same dotfiles. The full variant adds Rust, Go, the C/C++ toolchain (`build-base`), Node/npm, Java 21, a Python venv at `/opt/venv` (prepended to `PATH`, owned by `alpine` so `pip install` needs no sudo), GitHub CLI, and globally-installed `prettier eslint typescript @angular/cli pm2`. `pm2-logrotate` is a PM2 module (`pm2 install`), not an npm global.
 
 Both variants deliberately install `coreutils` and `tar` to displace the busybox applets. Alpine's `tar` package overwrites `/bin/tar` — the busybox symlink — with the real GNU binary, so there is no PATH-order subtlety and no `/usr/bin/tar`. Neither package is redundant: dropping them silently reverts `tar` to busybox 1.37 (no `--sort`, `--xattrs`, `--owner`/`--group`, `--wildcards`) and `ls`/`dircolors`/`date` to the busybox versions. `busybox tar` still works if the applet is ever needed explicitly. Likewise `flock` (util-linux, for the data-root lock) and `ncurses` (`tput`, without which the bashrc prompt has no colours).
+
+Both Dockerfiles run `apk upgrade --no-cache` before `apk add`: the pinned `docker:X-dind` base lags the Alpine repositories (measured on 29.8.2: `nghttp2-libs` 1.69.0 vs 1.70.0, `pcre2` 10.48 vs 10.49), so without it the base's own libraries keep their old security fixes until the next upstream tag. Builds are therefore not reproducible day to day, as they already were for the added packages.
 
 `TINI_SUBREAPER=1`: `docker-init` (tini) runs below our PID 1, and without subreaper status it warns that it cannot reap dockerd's orphans. rclone is fetched for `DIND_RCLONE_VERSION` (default `current`, resolved through `version.txt`) and checked against that release's `SHA256SUMS`. The build arg is not called `RCLONE_VERSION` because rclone reads `RCLONE_*` variables as flag defaults and takes that one for `--version`. `user_allow_other` goes into `/etc/fuse.conf`, the file both fuse2 and fuse3 read.
 

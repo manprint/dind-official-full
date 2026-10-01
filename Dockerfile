@@ -1,4 +1,4 @@
-FROM docker:29.8.1-dind
+FROM docker:29.8.2-dind
 
 # "current" resolves to the newest rclone at build time; CI resolves it once
 # and passes the same version to every platform build. Not RCLONE_VERSION:
@@ -19,6 +19,7 @@ ENV TZ=Europe/Rome \
 ENV TINI_SUBREAPER=1
 
 RUN set -eux; \
+	apk upgrade --no-cache; \
 	apk add --no-cache \
 		bash \
 		bash-completion \

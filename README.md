@@ -184,3 +184,5 @@ Avvio, DNS, lock, `docker stop`, 3 cicli di `docker kill`/`docker start`, doppio
 - `tar` e `coreutils` GNU al posto degli applet busybox
 
 La versione minimal mantiene la logica DinD, l'utente `alpine`, sudo, rclone, fuse e la gestione dei bind mount, ma non installa Rust, GitHub CLI, toolchain C/C++, Node.js/npm, PM2, Java, Python, TypeScript o Angular CLI.
+
+Una variante con Incus al posto di Docker (container di sistema, UI web, API per OpenTofu) è descritta in [README_INCUS.md](README_INCUS.md).

@@ -10,6 +10,11 @@ registry := "ghcr.io"
 repo := env("IMAGE_REPO", `git remote get-url origin 2>/dev/null | sed -E 's/\.git$//; s#.*[:/]([^/:]+/[^/]+)$#\1#' | tr '[:upper:]' '[:lower:]'`)
 image_full := registry / repo
 image_minimal := registry / repo + "-minimal"
+image_incus := registry / repo + "-incus"
+
+# Incus release the Dockerfile builds from source (INCUS_VERSION build arg).
+
+incus_version := env("INCUS_VERSION", "7.5.1")
 
 # Same default as the Dockerfiles; CI pins the version it resolved once.
 
@@ -37,6 +42,18 @@ build-full-clean tag="latest": (_build "Dockerfile" image_full tag "--no-cache")
 # Same, minimal image only
 build-minimal-clean tag="latest": (_build "Dockerfile.minimal" image_minimal tag "--no-cache")
 
+# Build the Incus image (Dockerfile.incus): incusd from source and the web UI, so slow the first time
+build-incus tag="latest": (_build_incus tag "")
+
+# Same, from scratch (no layer cache)
+build-incus-clean tag="latest": (_build_incus tag "--no-cache")
+
+_build_incus tag flags:
+    docker build --pull {{ flags }} -f Dockerfile.incus \
+        --build-arg INCUS_VERSION={{ incus_version }} \
+        --build-arg DIND_RCLONE_VERSION={{ rclone }} \
+        -t {{ image_incus }}:{{ tag }} .
+
 # --pull as in CI: the pinned base image is refreshed, not taken from the cache
 _build dockerfile image tag flags:
     docker build --pull {{ flags }} -f {{ dockerfile }} \
@@ -51,7 +68,12 @@ smoke-full tag="latest" cycles="3":
 smoke-minimal tag="latest" cycles="3":
     tests/smoke.sh {{ image_minimal }}:{{ tag }} {{ cycles }}
 
+# Smoke-test the Incus image (needs --cap-add ALL, systempaths=unconfined, cgroup v2, /dev/fuse)
+smoke-incus tag="latest" cycles="3":
+    tests/smoke.incus.sh {{ image_incus }}:{{ tag }} {{ cycles }}
+
 # Print the image names the build recipes use
 names:
     @echo "full:    {{ image_full }}"
     @echo "minimal: {{ image_minimal }}"
+    @echo "incus:   {{ image_incus }}"

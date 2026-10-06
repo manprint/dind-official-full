@@ -156,3 +156,16 @@ That stamping script is indentation-sensitive: it rewrites any line starting wit
 Top-level permissions are `contents: read`; jobs raise what they need (`packages: write` for build and merge, `packages: read` for smoke, `contents: write` for release). Actions are pinned by commit SHA with the version in a comment, and `.github/dependabot.yml` proposes updates for them and for the base image weekly.
 
 Repo name is interpolated into the image name and lowercased in CI, so the image path follows `github.repository` — not a hardcoded value.
+
+## Incus variant (branch `incus`)
+
+`Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`; documented in `README_INCUS.md` (Italian, with the test matrix). Incus 7.5.1 instead of Docker: `incusd` is built from the release tarball (Alpine only ships the 7.0.1 LTS), the official web UI (`zabbly/incus-ui-canonical`, needs a git checkout and the removal of `src/types/parse-prometheus-text-format.d.ts`) is served by `incusd` from `INCUS_UI`. Not in the release pipeline yet. Lint/smoke: `shellcheck entrypoint.incus.sh tests/smoke.incus.sh`, `just smoke-incus TAG`.
+
+- **PID 1 is tini**, the entrypoint its only child (`ENTRYPOINT ["/sbin/tini","--",…]`), so unlike the Docker entrypoints it does not need to stay PID 1 itself. It still never `exec`s in the daemon path and keeps the INT/TERM trap.
+- **Not privileged**: `cap_add: ALL`, `apparmor`/`seccomp`/`systempaths=unconfined`, `cgroup: private`, `/dev/fuse` (lxcfs), loop-control and tun, plus `device_cgroup_rules`. `/sys` and `/sys/fs/cgroup` are remounted rw by the root side.
+- **cgroups (`setup_cgroups`)**: LXC takes the base cgroup from `/proc/1/cgroup`, strips `init.scope` and writes `+controller` to its `cgroup.subtree_control`; a cgroup holding processes cannot enable controllers (EBUSY). So every process moves to `/sys/fs/cgroup/init.scope` and all controllers are enabled at the root, retried because `wait_incus` keeps forking unprivileged children into the root cgroup meanwhile. Using `/init` leaves no `memory.max` ("Failed to set memory.max").
+- **Stale state is cleaned in two halves.** `/run/incus`, `/run/lxc` and the lxcfs mount belong to the container and go first; the files in the data volume (`unix.socket`, `guestapi/sock`, `networks/*/dnsmasq.pid`, `forkdns.*`) go **after** the `flock`, in the root re-entry. Before the lock, a loser on a shared volume deleted the winner's socket. The glob must run in a root shell (`as_root sh -c`): `/var/lib/incus/networks` is `drwx--x--x`, and an unexpanded pattern removed nothing, which left a `dnsmasq.pid` naming a live pid and the bridge failing to start.
+- `wait_incus` requires `pidof incusd` before `incus info`: a loser's client would otherwise be answered by the winner's socket on the shared volume.
+- Shutdown is one `incus admin shutdown --timeout N` (instances, then the daemon), SIGTERM to `incusd` only when the API is unreachable.
+- `docker kill` marks the container as manually stopped, so `restart: unless-stopped` does not bring it back (neither does `stop`); the crash test is `kill -9` of the container's PID 1 from the host.
+- One-time preseed (marker `/var/lib/incus/.incus-env-initialized`); the HTTPS address, the bridge subnet and the trusted client certificate (`INCUS_ENV_*`) follow the environment at every start.

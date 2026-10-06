@@ -1,0 +1,242 @@
+# Incus (system containers only, no VMs) inside a container. The daemon is built
+# from the release tarball: Alpine only packages the LTS line, and the upstream
+# release assets are client binaries only.
+ARG ALPINE_VERSION=3.24
+
+FROM alpine:${ALPINE_VERSION} AS build
+# Release to build, e.g. 7.5.1. The tarball is checked against the release's
+# checksums.txt.
+ARG INCUS_VERSION=7.5.1
+RUN set -eux; \
+	apk add --no-cache \
+		acl-dev \
+		build-base \
+		ca-certificates \
+		cowsql-dev \
+		eudev-dev \
+		gettext-dev \
+		go \
+		libcap-dev \
+		libuv-dev \
+		linux-headers \
+		lxc-dev \
+		lz4-dev \
+		raft-cowsql-dev \
+		sqlite-dev
+WORKDIR /src
+RUN set -eux; \
+	base="https://github.com/lxc/incus/releases/download/v${INCUS_VERSION}"; \
+	wget -qO incus.tar.gz "$base/incus-${INCUS_VERSION}.tar.gz"; \
+	wget -qO checksums.txt "$base/checksums.txt"; \
+	grep " incus-${INCUS_VERSION}.tar.gz\$" checksums.txt | sed "s# incus-${INCUS_VERSION}.tar.gz\$# incus.tar.gz#" | sha256sum -c -; \
+	tar -xzf incus.tar.gz --strip-components=1; \
+	rm incus.tar.gz checksums.txt
+# incusd needs a cowsql-aware sqlite (libsqlite3 tag). The go.mod may ask for a
+# newer toolchain than Alpine ships: Go fetches it on its own.
+RUN set -eux; \
+	export CGO_CFLAGS="-I/usr/include/raft -I/usr/include/cowsql" \
+		CGO_LDFLAGS="-lintl" \
+		CGO_LDFLAGS_ALLOW="(-Wl,-wrap,pthread_create)|(-Wl,-z,now)" \
+		GOBIN=/out; \
+	go version; \
+	go install -trimpath -tags libsqlite3 ./cmd/incusd ./cmd/incus ./cmd/fuidshift; \
+	/out/incus --version; \
+	ls -l /out
+
+# The official web UI: the Incus fork of the LXD UI (zabbly/incus-ui-canonical),
+# which is what Zabbly's incus-ui-canonical package ships. It has no releases
+# that track Incus, so a commit is pinned: its main branch is rebased often and
+# a vanished commit fails the build instead of changing what ships. incusd
+# serves the build under /ui/ when INCUS_UI points at it.
+FROM node:24-alpine AS ui
+ARG INCUS_UI_REF=0031b46920cb26872c06715aad268cb5b98fde69
+RUN apk add --no-cache git
+WORKDIR /src
+# vite.config.ts stamps the build with `git rev-parse`, so a checkout, not a tarball.
+RUN set -eux; \
+	git init -q .; \
+	git remote add origin https://github.com/zabbly/incus-ui-canonical.git; \
+	git fetch -q --depth 1 origin "$INCUS_UI_REF"; \
+	git checkout -q FETCH_HEAD
+# The repository's own src/types stub for parse-prometheus-text-format shadows the
+# real package in vite's tsconfig-paths resolution here ("default" is not
+# exported); vite does not type-check, so the stub can go.
+RUN set -eux; \
+	yarn --network-concurrency 2 --frozen-lockfile; \
+	rm -f src/types/parse-prometheus-text-format.d.ts; \
+	yarn run build; \
+	test -f build/ui/index.html
+
+FROM alpine:${ALPINE_VERSION}
+
+# "current" resolves to the newest rclone at build time; CI resolves it once
+# and passes the same version to every platform build. Not RCLONE_VERSION:
+# rclone reads RCLONE_* variables as flag defaults and takes that one for
+# --version, so `rclone version` below would fail.
+ARG DIND_RCLONE_VERSION=current
+
+ENV TZ=Europe/Rome \
+	LANG=it_IT.UTF-8 \
+	LC_ALL=it_IT.UTF-8 \
+	LANGUAGE=it_IT:it \
+	INCUS_UI=/opt/incus/ui
+
+RUN set -eux; \
+	apk upgrade --no-cache; \
+	apk add --no-cache \
+		acl \
+		attr \
+		bash \
+		bash-completion \
+		bat \
+		bind-tools \
+		bridge-utils \
+		btrfs-progs \
+		ca-certificates \
+		conntrack-tools \
+		coreutils \
+		cowsql \
+		curl \
+		direnv \
+		dnsmasq \
+		e2fsprogs \
+		ethtool \
+		fd \
+		flock \
+		fzf \
+		fuse \
+		fuse3 \
+		git \
+		iftop \
+		iperf3 \
+		iproute2 \
+		iputils \
+		jq \
+		just \
+		libcap \
+		libuv \
+		losetup \
+		lsof \
+		lvm2 \
+		lxc \
+		lxcfs \
+		lz4-libs \
+		musl-locales \
+		musl-locales-lang \
+		mtr \
+		nano \
+		ncurses \
+		net-tools \
+		netcat-openbsd \
+		nftables \
+		ngrep \
+		nmap \
+		raft-cowsql \
+		ripgrep \
+		rsync \
+		shadow-subids \
+		shellcheck \
+		shfmt \
+		socat \
+		squashfs-tools \
+		strace \
+		sudo \
+		tar \
+		tcpdump \
+		tini \
+		tmux \
+		traceroute \
+		tree \
+		tzdata \
+		unzip \
+		xfsprogs \
+		xz \
+		yq; \
+	ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime; \
+	echo "Europe/Rome" > /etc/timezone; \
+	touch /etc/fuse.conf; \
+	sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf; \
+	grep -q '^user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fuse.conf; \
+	printf 'export TZ=Europe/Rome\nexport LANG=it_IT.UTF-8\nexport LC_ALL=it_IT.UTF-8\nexport LANGUAGE=it_IT:it\n' > /etc/profile.d/10locale.sh; \
+	printf 'if [ -n "${BASH_VERSION:-}" ] && command -v direnv >/dev/null 2>&1; then eval "$(direnv hook bash)"; fi\n' > /etc/profile.d/20direnv.sh; \
+	apkArch="$(apk --print-arch)"; \
+	case "$apkArch" in \
+		x86_64) rcloneArch=amd64 ;; \
+		aarch64) rcloneArch=arm64 ;; \
+		armv7) rcloneArch=arm-v7 ;; \
+		*) echo >&2 "unsupported arch for rclone: $apkArch"; exit 1 ;; \
+	esac; \
+	rcloneVersion="$DIND_RCLONE_VERSION"; \
+	if [ "$rcloneVersion" = current ]; then \
+		rcloneVersion="$(wget -qO- https://downloads.rclone.org/version.txt | awk '{print $2}')"; \
+	fi; \
+	rcloneDir="rclone-${rcloneVersion}-linux-${rcloneArch}"; \
+	wget -O "/tmp/${rcloneDir}.zip" "https://downloads.rclone.org/${rcloneVersion}/${rcloneDir}.zip"; \
+	wget -O /tmp/rclone.sha256sums "https://downloads.rclone.org/${rcloneVersion}/SHA256SUMS"; \
+	(cd /tmp && grep " ${rcloneDir}\.zip\$" rclone.sha256sums | sha256sum -c -); \
+	unzip -o "/tmp/${rcloneDir}.zip" -d /tmp; \
+	install -m 0755 "/tmp/${rcloneDir}/rclone" /usr/local/bin/rclone; \
+	rm -rf "/tmp/${rcloneDir}.zip" "/tmp/${rcloneDir}" /tmp/rclone.sha256sums; \
+	rclone version; \
+	addgroup -g 1000 alpine; \
+	adduser -D -u 1000 -G alpine -h /home/alpine -s /bin/bash alpine; \
+	# root's login shell is bash too: `sudo su`, `sudo -i` and `su -` read ~/.bashrc, like `exec -u root bash`.
+	sed -i 's#^\(root:.*\):/bin/[a-z]*sh$#\1:/bin/bash#' /etc/passwd; \
+	grep -q '^root:.*:/bin/bash$' /etc/passwd; \
+	addgroup -S incus; \
+	addgroup -S incus-admin; \
+	addgroup alpine incus-admin; \
+	if getent group fuse >/dev/null; then addgroup alpine fuse; fi; \
+	printf '%s\n' \
+		'# !env_reset: the entrypoint hands INCUS_* & co. to the root side.' \
+		'# always_set_home: with the environment kept, root would inherit HOME=/home/alpine.' \
+		'Defaults:alpine !env_reset' \
+		'Defaults:alpine always_set_home' \
+		'Defaults:alpine secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+		'alpine ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/alpine; \
+	chmod 0440 /etc/sudoers.d/alpine; \
+	visudo -cf /etc/sudoers.d/alpine; \
+	mkdir -p /etc/skel; \
+	rm -rf /tmp/*
+
+COPY --from=build /out/incusd /usr/sbin/incusd
+COPY --from=build /out/incus /out/fuidshift /usr/bin/
+COPY --from=ui /src/build/ui /opt/incus/ui
+
+# Fails the build when a library the daemon links against is missing.
+RUN set -eux; \
+	incusd --version; \
+	incus --version; \
+	! ldd /usr/sbin/incusd | grep -i "not found"; \
+	lxc-start --version; \
+	lxcfs --version; \
+	dnsmasq --version | head -1
+
+COPY bashrc /etc/skel/.bashrc
+COPY bash_aliases /etc/skel/.bash_aliases
+COPY profile /etc/skel/.profile
+
+RUN set -eux; \
+	install -m 0644 /etc/skel/.bashrc /root/.bashrc; \
+	install -m 0644 /etc/skel/.bash_aliases /root/.bash_aliases; \
+	install -m 0644 /etc/skel/.profile /root/.profile; \
+	ln -sfn .profile /root/.bash_profile; \
+	install -m 0644 /etc/skel/.bashrc /home/alpine/.bashrc; \
+	install -m 0644 /etc/skel/.bash_aliases /home/alpine/.bash_aliases; \
+	install -m 0644 /etc/skel/.profile /home/alpine/.profile; \
+	ln -sfn .profile /home/alpine/.bash_profile; \
+	chown alpine:alpine /home/alpine/.bashrc /home/alpine/.bash_aliases /home/alpine/.profile /home/alpine/.bash_profile
+
+COPY entrypoint.incus.sh /usr/local/bin/dev-entrypoint-incus.sh
+RUN chmod +x /usr/local/bin/dev-entrypoint-incus.sh
+
+# 8443: API and web UI (/ui/), TLS with client certificates only.
+EXPOSE 8443
+VOLUME ["/var/lib/incus", "/home/alpine"]
+
+USER alpine
+WORKDIR /home/alpine
+# tini is PID 1 (it reaps what incus leaves behind and forwards SIGTERM), the
+# entrypoint script its only child.
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/dev-entrypoint-incus.sh"]
+CMD []

@@ -6,3 +6,5 @@
 !bashrc
 !bash_aliases
 !profile
+!Dockerfile.incus
+!entrypoint.incus.sh

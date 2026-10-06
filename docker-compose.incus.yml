@@ -1,0 +1,108 @@
+services:
+  incus:
+    image: ghcr.io/manprint/dind-official-full-incus:${INCUS_TAG:-latest}
+    # INCUS_NAME, INCUS_API_PORT and the volumes let several instances run side
+    # by side (each needs its own volumes: two incusd on one data directory
+    # corrupt it, the second one refuses to start with exit 75).
+    container_name: ${INCUS_NAME:-incus-env}
+    hostname: incus
+    # A hard stop (power loss, host crash, OOM) must bring the instances back
+    # on their own: the host daemon restarts this container, and incus starts
+    # every instance that was running (boot.autostart unset or true).
+    restart: unless-stopped
+    # Not `privileged: true`: the capabilities below are what incus needs, and
+    # the container keeps its default masked paths only where it must not.
+    cap_add:
+      - ALL
+    security_opt:
+      # incus applies its own AppArmor profiles and seccomp filters to every
+      # instance; the outer ones would only get in the way.
+      - apparmor=unconfined
+      - seccomp=unconfined
+      # Unmasked /proc and /sys: LXC mounts its own over them.
+      - systempaths=unconfined
+    # Own cgroup namespace: the entrypoint creates the cgroups of the
+    # instances under the container's cgroup root.
+    cgroup: private
+    devices:
+      # lxcfs (per-instance /proc/meminfo, cpuinfo…) is a FUSE filesystem.
+      - /dev/fuse:/dev/fuse
+      # Loop devices for the file-backed btrfs and lvm storage pools; the
+      # entrypoint creates the loopN nodes themselves.
+      - /dev/loop-control:/dev/loop-control
+      # TUN for instances that run a VPN (device type unix-char).
+      - /dev/net/tun:/dev/net/tun
+    device_cgroup_rules:
+      # loop (7), tun (10:200), device-mapper (10:236), loop-control (10:237)
+      - "b 7:* rmw"
+      - "c 10:200 rwm"
+      - "c 10:236 rwm"
+      - "c 10:237 rwm"
+    # Daemon path only: with a TTY the entrypoint would drop into an
+    # interactive login shell instead of supervising incus. `compose run`
+    # allocates its own TTY, so the interactive path still works.
+    stdin_open: false
+    tty: false
+    working_dir: /home/alpine
+    environment:
+      TZ: Europe/Rome
+      LANG: it_IT.UTF-8
+      LC_ALL: it_IT.UTF-8
+      LANGUAGE: it_IT:it
+      # Shown in the shell prompt as user@host(name), e.g. "myenv".
+      DIND_ENVIRONMENT_NAME: ${DIND_ENVIRONMENT_NAME:-}
+      # First start only (storage pool "default"): dir, btrfs, zfs or lvm need
+      # a filesystem the host's kernel offers inside a container; "dir" always
+      # works. INCUS_ENV_STORAGE_SOURCE / _SIZE are passed to the pool as is.
+      INCUS_ENV_STORAGE_DRIVER: ${INCUS_ENV_STORAGE_DRIVER:-dir}
+      INCUS_ENV_STORAGE_SOURCE: ${INCUS_ENV_STORAGE_SOURCE:-}
+      INCUS_ENV_STORAGE_SIZE: ${INCUS_ENV_STORAGE_SIZE:-}
+      # IPv4 CIDR of the incus bridge, e.g. "10.10.200.0/24" (the instances
+      # start on it). Unset, incus picks a free /24 by itself. Applied on
+      # every start.
+      INCUS_ENV_BRIDGE_ADDRESS: ${INCUS_ENV_BRIDGE_ADDRESS:-}
+      # Where the API and the web UI (https://host:8443/ui/) listen inside the
+      # container; "none" turns the API off. Clients need a trusted certificate
+      # or a token (`docker exec incus-env incus config trust add NAME`).
+      INCUS_ENV_HTTPS_ADDRESS: ${INCUS_ENV_HTTPS_ADDRESS:-:8443}
+      # A client certificate (PEM, readable in the container) to trust at every
+      # start, e.g. the one OpenTofu/Terraform presents.
+      INCUS_ENV_TRUST_CERT_FILE: ${INCUS_ENV_TRUST_CERT_FILE:-}
+      INCUS_ENV_TRUST_CERT_NAME: ${INCUS_ENV_TRUST_CERT_NAME:-}
+    volumes:
+      - incus-data:/var/lib/incus
+      - alpine-home:/home/alpine
+    # incus stops the instances one by one (INCUS_ENV_SHUTDOWN_TIMEOUT, 100s by
+    # default, is capped by this). Past the grace period Docker SIGKILLs it all
+    # and the instances come back as after a crash.
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "incus", "info"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    networks:
+      incus:
+        ipv4_address: ${INCUS_IPV4:-10.10.170.1}
+    ports:
+      # The Incus API is root-equivalent on the host of the instances. Loopback
+      # by default; INCUS_API_BIND=0.0.0.0 (or an address) exposes it to
+      # OpenTofu/Terraform on other machines.
+      - "${INCUS_API_BIND:-127.0.0.1}:${INCUS_API_PORT:-8443}:8443"
+
+volumes:
+  incus-data:
+  alpine-home:
+
+networks:
+  incus:
+    ipam:
+      config:
+        - subnet: ${INCUS_NET_SUBNET:-10.10.170.0/24}
+          gateway: ${INCUS_NET_GATEWAY:-10.10.170.254}

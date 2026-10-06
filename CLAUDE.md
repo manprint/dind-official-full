@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Docker-in-Docker development image built on `docker:29.8.2-dind`. No application code — the deliverables are two Dockerfiles, two shell entrypoints, three dotfiles, three compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full` and `...-full-minimal`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
+Docker-in-Docker development image built on `docker:29.8.2-dind`. No application code — the deliverables are two Dockerfiles, two shell entrypoints, three dotfiles, three compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full`, `...-full-minimal` and `...-full-incus`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
 
 README is in Italian; container locale/timezone are `it_IT.UTF-8` / `Europe/Rome`.
 
@@ -145,11 +145,11 @@ Changes to shared behaviour must be applied to **both** entrypoints and **both**
 Tag `vX.Y.Z` triggers:
 
 1. `prepare` — decides whether the tag is the highest `vX.Y.Z` (`sort -V`); only then do the image and the GitHub release get `latest`, so a patch for an older line cannot roll it back. Resolves the rclone version once, so every platform build ships the same one.
-2. `lint` — shellcheck on both entrypoints and the smoke test, `docker compose config -q` on the three compose files.
-3. `build` — 4 jobs (full/minimal × amd64 on `ubuntu-24.04` / arm64 on `ubuntu-24.04-arm`, native runners, no QEMU), `no-cache` and `pull` on purpose: with a layer cache the `apk add` layer never changes until the Dockerfile does, and releases would keep shipping the same packages without their security fixes. Each pushes by digest only (`push-by-digest=true`, no tag) and uploads the digest as an artifact.
-4. `smoke` — per variant × arch, pulls that digest on its native runner and runs `tests/smoke.sh`.
+2. `lint` — shellcheck on the three entrypoints and both smoke tests, `docker compose config -q` on the four compose files.
+3. `build` — 6 jobs (full/minimal/incus × amd64 on `ubuntu-24.04` / arm64 on `ubuntu-24.04-arm`, native runners, no QEMU), `no-cache` and `pull` on purpose: with a layer cache the `apk add` layer never changes until the Dockerfile does, and releases would keep shipping the same packages without their security fixes. Each pushes by digest only (`push-by-digest=true`, no tag) and uploads the digest as an artifact.
+4. `smoke` — per variant × arch, pulls that digest on its native runner and runs `tests/smoke.sh` (`tests/smoke.incus.sh` for incus, the `script` field of the matrix entry).
 5. `merge` — needs prepare, lint and smoke. Per variant, `docker buildx imagetools create` assembles the manifest list from the digests and applies `X.Y.Z`, `X.Y`, `vX.Y.Z` and, for the highest release only, `latest` (`flavor: latest=false`, or metadata-action adds it to every semver tag by itself). A failed check leaves only untagged digests behind.
-6. `release` — rewrites all three compose files with an inline Python script that **pins `image:` to the released version** (and would strip a `build:` block, should one come back: the compose files have none today, since the build context is not part of the download), then attaches them to the GitHub Release, `make_latest` as decided by prepare.
+6. `release` — rewrites all four compose files with an inline Python script that **pins `image:` to the released version** (and would strip a `build:` block, should one come back: the compose files have none today, since the build context is not part of the download), then attaches them to the GitHub Release, `make_latest` as decided by prepare.
 
 That stamping script is indentation-sensitive: it rewrites any line starting with `    image:` and, as a guard, drops a `    build:` (4 spaces) block with its deeper-indented lines. It asserts no `build:` is left and the pinned `image:` is there, so re-indenting the `dind` service in a compose file now fails the release instead of silently breaking its assets.
 
@@ -159,7 +159,7 @@ Repo name is interpolated into the image name and lowercased in CI, so the image
 
 ## Incus variant (branch `incus`)
 
-`Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`; documented in `README_INCUS.md` (Italian, with the test matrix). Incus 7.5.1 instead of Docker: `incusd` is built from the release tarball (Alpine only ships the 7.0.1 LTS), the official web UI (`zabbly/incus-ui-canonical`, needs a git checkout and the removal of `src/types/parse-prometheus-text-format.d.ts`) is served by `incusd` from `INCUS_UI`. Not in the release pipeline yet. Lint/smoke: `shellcheck entrypoint.incus.sh tests/smoke.incus.sh`, `just smoke-incus TAG`.
+`Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`; documented in `README_INCUS.md` (Italian, with the test matrix). Incus 7.5.1 instead of Docker: `incusd` is built from the release tarball (Alpine only ships the 7.0.1 LTS), the official web UI (`zabbly/incus-ui-canonical`, needs a git checkout and the removal of `src/types/parse-prometheus-text-format.d.ts`) is served by `incusd` from `INCUS_UI`. Released by the same pipeline as a third variant (`-incus` suffix, `Dockerfile.incus`, `tests/smoke.incus.sh`, `docker-compose.incus.yml` stamped and attached); one failing smoke blocks every variant's tags, as for the others. Dependabot does not see the `INCUS_VERSION` / `INCUS_UI_REF` build args: bump them by hand. Lint/smoke: `shellcheck entrypoint.incus.sh tests/smoke.incus.sh`, `just smoke-incus TAG`.
 
 - **PID 1 is tini**, the entrypoint its only child (`ENTRYPOINT ["/sbin/tini","--",…]`), so unlike the Docker entrypoints it does not need to stay PID 1 itself. It still never `exec`s in the daemon path and keeps the INT/TERM trap.
 - **Not privileged**: `cap_add: ALL`, `apparmor`/`seccomp`/`systempaths=unconfined`, `cgroup: private`, `/dev/fuse` (lxcfs), loop-control and tun, plus `device_cgroup_rules`. `/sys` and `/sys/fs/cgroup` are remounted rw by the root side.

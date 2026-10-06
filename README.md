@@ -167,7 +167,7 @@ docker build -t dind-test .
 tests/smoke.sh dind-test 3
 ```
 
-Avvio, DNS, lock, `docker stop`, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine prima di pubblicarne i tag.
+Avvio, DNS, lock, `docker stop`, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
 
 ## Note
 

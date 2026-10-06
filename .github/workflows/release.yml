@@ -59,11 +59,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: shellcheck
-        run: shellcheck entrypoint.sh entrypoint.minimal.sh tests/smoke.sh
+        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh
 
       - name: Compose files
         run: |
-          for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml; do
+          for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml docker-compose.incus.yml; do
             docker compose -f "$f" config -q
           done
 
@@ -102,6 +102,18 @@ jobs:
             runner: ubuntu-24.04-arm
             platform: linux/arm64
             dockerfile: Dockerfile.minimal
+          - variant: incus
+            image_suffix: "-incus"
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            dockerfile: Dockerfile.incus
+          - variant: incus
+            image_suffix: "-incus"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: Dockerfile.incus
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -164,7 +176,7 @@ jobs:
           retention-days: 1
 
   # The exact digest that would be tagged, on its native runner. Nothing is
-  # tagged unless all four pass.
+  # tagged unless all six pass.
   smoke:
     name: smoke-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -180,18 +192,32 @@ jobs:
             image_suffix: ""
             arch: amd64
             runner: ubuntu-24.04
+            script: tests/smoke.sh
           - variant: full
             image_suffix: ""
             arch: arm64
             runner: ubuntu-24.04-arm
+            script: tests/smoke.sh
           - variant: minimal
             image_suffix: "-minimal"
             arch: amd64
             runner: ubuntu-24.04
+            script: tests/smoke.sh
           - variant: minimal
             image_suffix: "-minimal"
             arch: arm64
             runner: ubuntu-24.04-arm
+            script: tests/smoke.sh
+          - variant: incus
+            image_suffix: "-incus"
+            arch: amd64
+            runner: ubuntu-24.04
+            script: tests/smoke.incus.sh
+          - variant: incus
+            image_suffix: "-incus"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            script: tests/smoke.incus.sh
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -216,7 +242,7 @@ jobs:
         run: |
           image="${IMAGE_LC}@sha256:$(ls "${{ runner.temp }}/digests")"
           docker pull "$image"
-          bash tests/smoke.sh "$image" 3
+          bash ${{ matrix.script }} "$image" 3
 
   merge:
     name: manifest-${{ matrix.variant }}
@@ -234,6 +260,8 @@ jobs:
             image_suffix: ""
           - variant: minimal
             image_suffix: "-minimal"
+          - variant: incus
+            image_suffix: "-incus"
     steps:
       - name: Lowercase image name
         id: names
@@ -308,6 +336,7 @@ jobs:
             ("docker-compose.yml", ""),
             ("docker-compose.bind.yml", ""),
             ("docker-compose.minimal.bind.yml", "-minimal"),
+            ("docker-compose.incus.yml", "-incus"),
           ):
             image = f"{base}{suffix}:{version}"
             p = Path(filename)
@@ -340,3 +369,4 @@ jobs:
             docker-compose.yml
             docker-compose.bind.yml
             docker-compose.minimal.bind.yml
+            docker-compose.incus.yml

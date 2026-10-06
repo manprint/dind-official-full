@@ -20,7 +20,12 @@ incus launch images:debian/12 web -c limits.memory=512MiB -c limits.cpu=2
 incus list
 ```
 
-L'immagine non è ancora pubblicata dal workflow di release (`release.yml` non è stato toccato): per ora si costruisce in locale.
+L'immagine è costruita e pubblicata dal workflow di release (tag `vX.Y.Z`) come `ghcr.io/<repo>-incus` (multi-arch amd64/arm64, stessi tag delle altre varianti); `docker-compose.incus.yml` è allegato alla release con l'immagine fissata alla versione. In locale: `just build-incus`.
+
+```bash
+curl -fsSL https://github.com/manprint/dind-official-full/releases/latest/download/docker-compose.incus.yml -o docker-compose.incus.yml
+docker compose -f docker-compose.incus.yml up -d
+```
 
 ## Cosa serve al container esterno (compose)
 
@@ -252,4 +257,4 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 - Riavvio del demone Docker dell'host (avrebbe fermato gli altri container della macchina): il percorso è lo stesso del crash (#4), perché dopo il reboot Docker rialza il container con `unless-stopped`. Provato invece il `kill -9` del processo principale, che dall'host equivale a un crash/OOM.
 - `docker kill` come *crash*: Docker lo tratta come stop manuale (v. #3).
 - arm64, `privileged: true` come variante di compose, `linux.kernel_modules`, VM, ZFS, pool Ceph.
-- Pipeline di release: non estesa a questa immagine.
+- Pipeline di release: estesa a questa immagine (build amd64/arm64, `tests/smoke.incus.sh` su ogni digest prima dei tag), ma **non ancora eseguita su GitHub**: il test è passato in locale, non sui runner (cgroup v2, `/dev/fuse`, `apparmor` dei runner ubuntu-24.04). Un fallimento dello smoke incus blocca anche i tag delle altre varianti.

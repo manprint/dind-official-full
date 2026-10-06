@@ -199,19 +199,26 @@ Provato su Debian 12 (systemd): `docker run`, `--restart unless-stopped`, `-m 10
 
 ## Template per creare istanze: `/opt/incus-template`
 
-Due script, già nell'immagine in `/opt/incus-template/` (proprietà `alpine`, eseguibili) e in `scripts/` nel repository:
+Cinque script, già nell'immagine in `/opt/incus-template/` (proprietà `alpine`, eseguibili) e in `scripts/` nel repository:
 
-- `create_incus_alpine.sh` (default `images:alpine/3.24`, utente `alpine`)
-- `create_incus_debian13.sh` (default `images:debian/13`, utente `debian`)
+| Script | Immagine di default | Utente | Note |
+|---|---|---|---|
+| `create_incus_alpine.sh` | `images:alpine/3.24` | `alpine` | OpenRC, `apk` |
+| `create_incus_debian13.sh` | `images:debian/13` | `debian` | systemd, `apt` |
+| `create_incus_ubuntu2404.sh` | `images:ubuntu/24.04` | `ubuntu` | come Debian; toglie il `sudo` senza password che l'immagine dà a `ubuntu` (`/etc/sudoers.d/90-incus`) |
+| `create_incus_ubuntu2604.sh` | `images:ubuntu/26.04` | `ubuntu` | come sopra |
+| `create_incus_fedora.sh` | `images:fedora/44` (l'ultima sul server di immagini; per un'altra versione `INSTANCE_IMAGE=images:fedora/45`) | `fedora` | systemd, `dnf`, gruppo `wheel`; Docker dal repository ufficiale, altrimenti `moby-engine` |
+
+Fanno tutti le stesse cose con le stesse variabili.
 
 Si copiano dove serve (un container con il client `incus`, un'altra macchina con `INCUS_REMOTE=...`) e si lanciano. Creano l'istanza e la configurano:
 
 | Cosa | Dettaglio |
 |---|---|
 | utente | uid **1000** (configurabile) con gruppo, home e shell bash; password `password`; gruppo `sudo`/`wheel` (sudo chiede la password, `USER_SUDO_NOPASSWD=true` per toglierla) |
-| ora, lingua, tastiera | `Europe/Rome`, locale `it_IT.UTF-8` (`LANG`, `LC_ALL`, `LANGUAGE`), tastiera `it` (`/etc/default/keyboard`, `/etc/vconsole.conf` su Debian) |
-| ssh | server installato e attivo, accesso con password, **root disabilitato** |
-| Docker | Alpine: pacchetti `docker` + `docker-cli-compose`; Debian: repository ufficiale Docker (`docker-ce` + plugin compose; se fallisce ricade su `docker.io`). L'utente è nel gruppo `docker`, `daemon.json` con rotazione dei log |
+| ora, lingua, tastiera | `Europe/Rome`, locale `it_IT.UTF-8` (`LANG`, `LC_ALL`, `LANGUAGE`), tastiera `it` (`/etc/default/keyboard`, `/etc/vconsole.conf` tranne Alpine) |
+| ssh | server installato e attivo, accesso con password, **root disabilitato**; client `ssh`/`scp`/`sftp` |
+| Docker | Alpine: pacchetti `docker` + `docker-cli-compose`; Debian/Ubuntu/Fedora: repository ufficiale Docker (`docker-ce` + plugin compose; se fallisce ricade su `docker.io` / `moby-engine`). L'utente è nel gruppo `docker`, `daemon.json` con rotazione dei log |
 | rete | `ip`, `ping`, `dig`, `tcpdump`, `traceroute`, `mtr`, `nmap`, `nc`, `socat`, `iperf3`, `ethtool`, `ss`/`netstat`, `conntrack`, `iptables`, `nft` |
 | rclone + fuse | rclone ufficiale (ultima release, checksum verificato), `fuse`/`fuse3`, `user_allow_other` in `/etc/fuse.conf` |
 | shell | `bash-completion` (anche per root) e alias **`ll='ls -alFh'` per tutti gli utenti**, shell di login e non (`/etc/profile.d/10-aliases.sh` + `/etc/bash/10-aliases.sh` su Alpine, `/etc/bash.bashrc` su Debian) |
@@ -229,59 +236,100 @@ INSTANCE_RECREATE=true INSTALL_DOCKER=false INSTANCE_SSH_PUBLISH_PORT=2222 /opt/
 
 Una password debole come `password` va cambiata (o `SSH_PASSWORD_AUTH=no` con chiavi) prima di esporre l'istanza.
 
-### Variabili (le stesse nei due script salvo dove indicato)
+### Variabili (le stesse nei cinque script salvo dove indicato)
 
 Tutte con un default in testata, sovrascrivibili dall'ambiente.
 
 | Variabile | Default | Effetto |
 |---|---|---|
 | `INCUS_REMOTE` | vuoto | remote `incus` da usare |
-| `INSTANCE_NAME` | `alpine-dev` / `debian13-dev` | nome (anche hostname) |
-| `INSTANCE_IMAGE` | `images:alpine/3.24` / `images:debian/13` | immagine |
+| `INSTANCE_NAME` | `alpine-dev`, `debian13-dev`, `ubuntu2404-dev`, `ubuntu2604-dev`, `fedora-dev` | nome (anche hostname) |
+| `INSTANCE_IMAGE` | v. tabella sopra | immagine |
 | `INSTANCE_PROFILES` | `default` | profili, separati da spazio |
 | `INSTANCE_STORAGE_POOL`, `INSTANCE_NETWORK` | vuoti | pool/rete se diversi dal profilo |
 | `INSTANCE_IPV4` | vuoto | indirizzo fisso sul bridge gestito |
 | `INSTANCE_MEMORY`, `INSTANCE_CPU` | `2GiB`, `2` | `limits.memory`, `limits.cpu` (vuoto = nessun limite) |
+| `INSTANCE_SWAP` | vuoto | swap usabile dall'istanza: `512MiB`, `1GiB`, `2G`…; `0`/`off` = nessuna; vuoto = default di Incus (**nessuna**, anche con `limits.memory.swap=true`). Vedi *Memoria e swap* |
 | `INSTANCE_DISK_SIZE` | vuoto | dimensione disco root (pool btrfs/lvm) |
-| `INSTANCE_NESTING`, `INSTANCE_INTERCEPT`, `INSTANCE_PRIVILEGED`, `INSTANCE_AUTOSTART` | `true`, `true`, `false`, `true` | `security.nesting`, intercept `mknod`/`setxattr`, `security.privileged`, `boot.autostart` |
+| `INSTANCE_NESTING`, `INSTANCE_INTERCEPT`, `INSTANCE_PRIVILEGED`, `INSTANCE_AUTOSTART` | `true`, `true`, `false`, `true` | `security.nesting`, intercept `mknod`/`setxattr`/`sysinfo`, `security.privileged`, `boot.autostart` |
 | `INSTANCE_CONFIG` | vuoto | altre chiavi `key=value` separate da spazio |
 | `INSTANCE_SSH_PUBLISH_PORT` | vuoto | porta dell'host incus inoltrata alla 22 (device `proxy`) |
 | `INSTANCE_RECREATE` | `false` | cancella un'istanza esistente con lo stesso nome (altrimenti errore) |
-| `USER_NAME`, `USER_UID` | `alpine`/`debian`, `1000` | utente |
+| `USER_NAME`, `USER_UID` | `alpine`/`debian`/`ubuntu`/`fedora`, `1000` | utente |
 | `USER_PASSWORD`, `USER_SHELL` | `password`, `/bin/bash` | |
 | `USER_SUDO`, `USER_SUDO_NOPASSWD` | `true`, `false` | |
 | `TIMEZONE`, `LOCALE`, `KEYMAP` | `Europe/Rome`, `it_IT.UTF-8`, `it` | |
 | `SSH_PASSWORD_AUTH`, `SSH_PERMIT_ROOT` | `yes`, `no` | |
 | `INSTALL_DOCKER`, `INSTALL_NET_TOOLS`, `INSTALL_RCLONE` | `true` | |
-| `DOCKER_SOURCE` (solo Debian) | `official` | `official` o `distro` (`docker.io`) |
+| `DOCKER_SOURCE` (non Alpine) | `official` | `official` o `distro` (`docker.io` su Debian/Ubuntu, `moby-engine` su Fedora) |
 | `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE` | `10m`, `5` | |
 | `RCLONE_RELEASE` | `current` | o una versione, es. `v1.70.0` (non `RCLONE_VERSION`: rclone la legge come `--version`) |
-| `EXTRA_PACKAGES` | vuoto | altri pacchetti apk/apt |
+| `EXTRA_PACKAGES` | vuoto | altri pacchetti apk/apt/dnf |
 | `WAIT_NETWORK_SECONDS` | `90` | attesa di rete/DNS prima di installare |
+
+### Memoria, swap e CPU: cosa vedono i tool
+
+`limits.memory` e `limits.cpu` finiscono nel cgroup dell'istanza (`memory.max`, cpuset); lxcfs virtualizza `/proc/meminfo`, `/proc/cpuinfo`, `/proc/swaps`, `/proc/stat`. I tool sono coerenti solo se leggono da lì.
+
+- **Swap.** Incus non ha una *dimensione* di swap per i container: `limits.memory.swap` è un booleano e, misurato su Incus 7.5.1 con `limits.memory=2GiB`, `memory.swap.max` resta **0** sia di default sia con `true` (quindi lxcfs mostra `SwapTotal: 0` e htop `0K/0K`: è corretto, non c'è swap). `INSTANCE_SWAP=1GiB` scrive `raw.lxc: lxc.cgroup2.memory.swap.max = 1073741824` (misurato: cgroup, `/proc/meminfo`, `free`, htop mostrano 1 GiB, e sotto pressione la memoria finisce davvero in swap); `INSTANCE_SWAP=0` imposta `limits.memory.swap=false`. L'host deve avere swap (file o zram). `INSTANCE_CONFIG="raw.lxc=..."` ha la precedenza.
+- **`free` e `top` di busybox (Alpine) mostravano 47 GB e 2 GB di swap**, cioè l'host: usano la syscall `sysinfo()`, non `/proc/meminfo`. Gli script impostano `security.syscalls.intercept.sysinfo=true` (parte di `INSTANCE_INTERCEPT`): ora `free` dice 2048 MB e lo swap vero.
+- **`top`/`htop` con 0 usati su Alpine con Docker.** lxcfs calcola l'uso dal cgroup del PID 1 e toglie solo il suffisso `init.scope`. Il servizio OpenRC `cgroup-delegate` spostava i processi in `/init`: lxcfs leggeva un cgroup vuoto e `MemFree` era uguale a `MemTotal`, mentre il limite (2 GiB) era giusto. Ora li sposta in `init.scope`.
+- **Verifica** (`tests/templates.sh`, per ogni template, al primo avvio e dopo un riavvio): `memory.max` 2 GiB, `MemTotal` 2097152 kB, `nproc` e `/proc/cpuinfo` = 2 CPU, `free` totale 2048; un processo che alloca 300 MiB li fa comparire come *usati* in `free`, `/proc/meminfo`, `memory.current` e (Alpine) `busybox top`; con `INSTANCE_SWAP=1GiB` cgroup, `/proc/meminfo` e `free` dicono 1 GiB e 2,4 GiB di tmpfs in un'istanza da 2 GiB entrano solo usando la swap.
 
 ### Docker annidato su Alpine
 
-OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non può delegare i controller ai cgroup di Docker (`docker run -m` falliva con *memory.max: no such file*). Lo script Alpine installa il servizio OpenRC `cgroup-delegate` (prima di `docker`, al boot) che sposta i processi in `/sys/fs/cgroup/init` e abilita i controller: con questo `-m 100m` e `--cpus 0.5` funzionano, anche dopo un riavvio dell'istanza. Su Debian lo fa systemd.
+OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non può delegare i controller ai cgroup di Docker (`docker run -m` falliva con *memory.max: no such file*). Lo script Alpine installa il servizio OpenRC `cgroup-delegate` (prima di `docker`, al boot) che sposta i processi in `/sys/fs/cgroup/init.scope` (il nome conta: lxcfs toglie quel suffisso quando legge l'uso dell'istanza; con `init` `free`/`top`/`htop` mostravano 0 usati) e abilita i controller: con questo `-m 100m` e `--cpus 0.5` funzionano, anche dopo un riavvio dell'istanza. Su Debian lo fa systemd.
 
 ### Verifica eseguita
 
-Su questo host, dentro il container Incus (bind mount): entrambi gli script da zero in ~25 s ciascuno.
+`tests/templates.sh IMAGE [alpine|debian13|ubuntu2404|ubuntu2604|fedora ...]` (`just templates-incus TAG [template...]`) avvia l'immagine su bind mount nuovi, lancia ogni script con i suoi default (più `INSTANCE_SWAP=1GiB`), verifica, riavvia l'istanza e ripete i controlli. Serve internet (immagini delle istanze, pacchetti, repository Docker, rclone), quindi **non** fa parte della pipeline di release, il cui smoke test non usa registry. `SCRIPTS_DIR=scripts` prova gli script del working tree invece di quelli nell'immagine.
 
-| Verifica | Alpine 3.24 | Debian 13 |
+| Verifica (tutte OK su ciascun template) | Alpine 3.24 | Debian 13 | Ubuntu 24.04 | Ubuntu 26.04 | Fedora 44 |
+|---|---|---|---|---|---|
+| creazione e provisioning da zero | 19–25 s | 29 s | 37–40 s | 37 s | ~160 s (dnf) |
+| utente uid 1000, home, bash, gruppi (`wheel`/`sudo`, `docker`) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `Europe/Rome`, `CET/CEST`, `LANG`/`LC_ALL=it_IT.UTF-8` in login shell e in una sessione ssh interattiva, locale generato, tastiera `it` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ssh: login con password; password errata e `root` rifiutati | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `sudo` chiede la password e funziona con quella | ✓ | ✓ | ✓ (tolto `90-incus`) | ✓ | ✓ |
+| strumenti di rete, git/curl/wget/rsync/jq/htop/vim/nano, client ssh, rclone, `user_allow_other`, `fusermount` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| alias `ll` e bash-completion per utente e root, shell di login e non | ✓ | ✓ | ✓ | ✓ | ✓ |
+| memoria 2 GiB e 2 CPU coerenti in cgroup, `/proc/meminfo`, `free` (e `top` busybox); 300 MiB allocati risultano usati | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `INSTANCE_SWAP=1GiB`: cgroup, `/proc/meminfo`, `free` a 1 GiB; 2,4 GiB di tmpfs entrano usando la swap | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `INSTANCE_SWAP=lots` rifiutato prima di lanciare nulla | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ssh e Docker attivi, `docker run -m 100m --cpus 0.5` → `104857600` / `50000 100000` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| stessi controlli dopo il riavvio dell'istanza | ✓ | ✓ | ✓ | ✓ | ✓ |
+| seconda esecuzione senza `INSTANCE_RECREATE`: errore | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Non ripetuti per ogni script (stesso codice): `INSTANCE_IPV4`, `INSTANCE_SSH_PUBLISH_PORT`, utente/uid/password/timezone diversi, `EXTRA_PACKAGES`, `USER_SUDO_NOPASSWD`, `INSTALL_*=false`, memoria/CPU vuote, `INSTANCE_SWAP=0` e `off`, `DOCKER_SOURCE=distro`. La conversione di `INSTANCE_SWAP` (`1GiB`, `512MiB`, `0`) è provata a mano su Alpine.
+
+### Immagini `jrei` (systemd/OpenRC) sul Docker delle istanze
+
+Le immagini di <https://hub.docker.com/u/jrei> eseguono un init vero (systemd o OpenRC) dentro un container Docker. Provate con `JREI=1 tests/templates.sh IMAGE` sul demone Docker di **ognuno dei cinque template**, nel modo documentato dalle immagini:
+
+```bash
+docker run -d --name x \
+  --tmpfs /tmp --tmpfs /run --tmpfs /run/lock \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw --cgroupns=host \
+  --stop-signal SIGRTMIN+3 \          # solo systemd; OpenRC (busybox init) usa il SIGTERM di default
+  jrei/systemd-debian:13                 # con o senza --privileged
+```
+
+Per ogni immagine e per ogni modo (senza e con `--privileged`) il test attende che systemd sia `running`/`degraded` (OpenRC: runlevel `default`), verifica PID 1 = systemd, esegue una unit oneshot, controlla `systemd-journald`, ferma con `docker stop`, riparte e riattende. Risultato, **identico su tutti e cinque i template** (18 esecuzioni per template, 90 in tutto: 80 OK, 10 attesi come falliti):
+
+| Immagine | Senza `--privileged` | Con `--privileged` |
 |---|---|---|
-| utente uid 1000, home, gruppi (`wheel`/`sudo`, `docker`) | OK | OK |
-| login ssh con password; password errata e `root` rifiutati | OK | OK |
-| `LANG`/`LC_ALL=it_IT.UTF-8` (shell di login e ssh), `CEST`, hostname | OK | OK |
-| alias `ll` e completamento bash (utente e root, shell di login e non di login) | OK (194 completamenti su Alpine, 131 su Debian) | OK |
-| tastiera `it` | OK (`/etc/default/keyboard`) | OK (`/etc/default/keyboard`, `vconsole.conf`) |
-| `sudo` chiede la password, con la password funziona | OK | OK |
-| Docker 29.8.2 + Compose, `docker ps` come utente | OK | OK (repo ufficiale, Compose v5.6) |
-| `docker run -m 100m --cpus 0.5` | OK (`104857600`, `50000 100000`), anche dopo restart | OK |
-| rclone 1.75.1 (checksum ok), `user_allow_other` | OK | OK |
-| ssh e docker attivi dopo il riavvio dell'istanza | OK | OK |
-| strumenti di rete installati | OK | OK (9 su 9 verificati) |
-| variabili: `INSTANCE_IPV4`, `INSTANCE_SSH_PUBLISH_PORT`, utente/uid/password/timezone diversi, `EXTRA_PACKAGES`, `USER_SUDO_NOPASSWD`, `INSTALL_*=false`, memoria/CPU vuote | OK | non ripetuto (stesso codice dell'host) |
-| istanza già esistente: errore senza `INSTANCE_RECREATE=true` | OK | OK |
+| `systemd-debian:12`, `:13` | OK, stop 0–1 s, exit 0 | OK, stop ≤1 s, exit 130 |
+| `systemd-ubuntu:22.04`, `:24.04`, `:26.04` | OK, stop 0–1 s, exit 0 | OK, exit 130 |
+| `systemd-fedora:latest` (44) | OK | OK, exit 130 |
+| `systemd-centos:8` | parte e gira; `docker stop` ignora `SIGRTMIN+3` e arriva a SIGKILL dopo il timeout (exit 137) | OK, exit 130 |
+| `systemd-centos:7` | **non parte** | **non parte** |
+| `openrc-alpine:latest` | OK, stop 3–4 s, exit 0 | OK, stop 2 s, exit 129 |
+
+- **Non sono difetti di Incus**: gli stessi comportamenti si ottengono su un host Docker normale (provato): exit 130/129 con `--privileged` (systemd su `SIGRTMIN+3`, busybox init su `SIGTERM`), CentOS 8 che ignora il segnale senza `--privileged`, CentOS 7 (systemd 219) che non gira su cgroup v2 (`Failed to get D-Bus connection`).
+- **`--cgroupns=private` non va con queste immagini**, né qui né su un host normale: dichiarano `VOLUME /sys/fs/cgroup`, quindi senza il bind esplicito Docker vi monta un volume vuoto e systemd esce subito (`Failed to set RLIMIT_CORE`, exit 255). Il bind con `--cgroupns=host` è il modo che funziona.
+- `Failed to set RLIMIT_CORE: Operation not permitted` compare in log anche quando tutto funziona.
+- **Fedora**: l'immagine non ha un broker D-Bus, quindi `systemd-run` non funziona (`Failed to connect to system scope bus`); il test usa una unit oneshot.
+- Le immagini si scaricano una volta dall'host del test e si caricano in ogni istanza (`docker save | docker load`): il limite di pull anonimo di Docker Hub non regge 5 template × 10 immagini.
 
 ## Stabilità: cosa fa l'entrypoint
 
@@ -339,6 +387,9 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 33 | **Proxy web UI** su 8080: primo avvio genera e fida il certificato `incus-ui`; `/ui/` 200 e `/1.0` `auth: trusted` senza nulla nel browser; `/` → 302 `/ui/`; WebSocket `/1.0/events` → 101; ricreazione del container, `kill -9` del PID 1 e `docker stop`: stesso certificato, una sola voce nel trust store, stop 1 s exit 0 | OK |
 | 34 | Proxy con `INCUS_ENV_UI_PASSWORD`: senza credenziali o con password errata 401, corretta 200 | OK |
 | 35 | Smoke test (`tests/smoke.incus.sh`) con il controllo del proxy | OK, 19/19 |
+| 36 | **Ubuntu 24.04, Ubuntu 26.04, Fedora 44**: `create_incus_ubuntu2404.sh`, `create_incus_ubuntu2604.sh`, `create_incus_fedora.sh` con `tests/templates.sh` (tutta la tabella *Verifica eseguita*) | OK; 3 bug trovati e corretti (sotto) |
+| 37 | **Memoria e swap**: `INSTANCE_SWAP` (cgroup, lxcfs, `free`, htop; swap usata sotto pressione), `sysinfo` intercettato, `init.scope` su Alpine; `free`/`top`/`htop` coerenti con il limite | OK su tutti e cinque i template, prima e dopo il riavvio |
+| 38 | **Immagini jrei** (systemd Debian 12/13, Ubuntu 22.04/24.04/26.04, Fedora, CentOS 7/8, OpenRC Alpine) sul Docker di ogni template, con e senza `--privileged` | OK 80/90; i 10 restanti (CentOS 7, 2 modi × 5 template) sono attesi (systemd 219 su cgroup v2) e uguali su un host normale |
 | 31 | Compose con **bind mount** su ext4 (`INCUS_DATA`/`ALPINE_HOME`): primo avvio, `docker restart`, 3 crash, `down`/`up`, istanze Debian (nesting) e Alpine con limiti | OK: stato identico ai named volume, home seminata (dotfile di `alpine`), `memory.max` e rete intatti |
 | 30 | **OpenTofu** (provider `lxc/incus`) dal host contro la porta 8443 pubblicata: `apply` con token, istanza `tf1` con `limits.memory` creata e `RUNNING`; dopo un crash del container `plan` senza drift; `destroy` | OK |
 
@@ -348,10 +399,15 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 2. **Il perdente del lock cancellava i socket del vincitore**: la pulizia girava prima del lock, quindi un secondo container sullo stesso volume eliminava `unix.socket` del primo (il client smetteva di rispondere). Ora i file nel volume si puliscono solo a lock acquisito; prima del lock si tocca solo `/run` (strato del container). Il perdente non applica più la configurazione perché `wait_incus` richiede un `incusd` nel proprio namespace PID.
 3. **Race sui controller cgroup**: i processi lanciati da `wait_incus` mentre il lato root li spostava lasciavano EBUSY (*controller … not delegated*); ora lo spostamento si ripete.
 4. **Mancavano** `/etc/subuid`/`subgid`, il remount rw di `/sys` e la sintassi `incus config set chiave=valore` (la forma con spazio è deprecata).
+5. **`free`/`top`/`htop` incoerenti su Alpine** (v. *Memoria, swap e CPU*): busybox leggeva `sysinfo()` (RAM e swap dell'host) e il servizio `cgroup-delegate` spostava i processi in `/init` invece di `init.scope`, per cui lxcfs vedeva 0 usati. Corretti con `security.syscalls.intercept.sysinfo=true` e `init.scope`.
+6. **Ubuntu: `sudo` senza password.** L'immagine installa `/etc/sudoers.d/90-incus` con `NOPASSWD` per `ubuntu`: lo script lo toglie (ricompare solo con `USER_SUDO_NOPASSWD=true`).
+7. **Ubuntu: `ll` sovrascritto.** Il `~/.bashrc` di Ubuntu definisce `alias ll='ls -alF'` dopo `/etc/bash.bashrc`: gli script lo riscrivono in skel, nella home dell'utente e in quella di root.
+8. **Fedora: `LC_ALL` azzerato.** `/etc/profile.d/lang.sh` fa `unset LC_ALL` dopo il nostro file: il file è ora `zz-locale.sh` (e `zz-aliases.sh`, perché `colorls.sh` definisce un suo `ll`).
 
 ### Cosa NON è stato provato
 
 - Riavvio del demone Docker dell'host (avrebbe fermato gli altri container della macchina): il percorso è lo stesso del crash (#4), perché dopo il reboot Docker rialza il container con `unless-stopped`. Provato invece il `kill -9` del processo principale, che dall'host equivale a un crash/OOM.
 - `docker kill` come *crash*: Docker lo tratta come stop manuale (v. #3).
 - arm64, `privileged: true` come variante di compose, `linux.kernel_modules`, VM, ZFS, pool Ceph.
-- Pipeline di release: estesa a questa immagine (build amd64/arm64, `tests/smoke.incus.sh` su ogni digest prima dei tag), ma **non ancora eseguita su GitHub**: il test è passato in locale, non sui runner (cgroup v2, `/dev/fuse`, `apparmor` dei runner ubuntu-24.04). Un fallimento dello smoke incus blocca anche i tag delle altre varianti.
+- `tests/templates.sh` non è nella pipeline di release (serve internet, immagini delle istanze, Docker Hub): si lancia a mano. Lo smoke test (`tests/smoke.incus.sh`) invece sì, su ogni digest prima dei tag.
+- Template su arm64 (le immagini jrei in lista sono quasi tutte solo amd64).

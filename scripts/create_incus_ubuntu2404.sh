@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Creates a Debian 13 (trixie) Incus container and provisions it as a development box:
+# Creates an Ubuntu 24.04 LTS (noble) Incus container and provisions it as a development box:
 # user (uid 1000 by default) with home and password, timezone, Italian locale
 # and keyboard, ssh server, Docker + Compose, network debugging tools, rclone
 # and fuse (user_allow_other).
 #
-#   create_incus_debian13.sh
-#   INSTANCE_NAME=web INSTANCE_MEMORY=4GiB USER_PASSWORD=secret create_incus_debian13.sh
+#   create_incus_ubuntu2404.sh
+#   INSTANCE_NAME=web INSTANCE_MEMORY=4GiB USER_PASSWORD=secret create_incus_ubuntu2404.sh
 #
 # Runs anywhere an `incus` client reaches the daemon: inside the incus
 # container (/opt/incus-template) or on another machine (INCUS_REMOTE).
@@ -15,8 +15,8 @@ set -euo pipefail
 
 # ---- instance ------------------------------------------------------------
 : "${INCUS_REMOTE:=}"                    # remote name; empty = the default remote
-: "${INSTANCE_NAME:=debian13-dev}"         # also the hostname
-: "${INSTANCE_IMAGE:=images:debian/13}"
+: "${INSTANCE_NAME:=ubuntu2404-dev}"         # also the hostname
+: "${INSTANCE_IMAGE:=images:ubuntu/24.04}"
 : "${INSTANCE_PROFILES:=default}"        # space separated
 : "${INSTANCE_STORAGE_POOL:=}"           # empty = the profile's pool
 : "${INSTANCE_NETWORK:=}"                # empty = the profile's network
@@ -34,7 +34,7 @@ set -euo pipefail
 : "${INSTANCE_RECREATE:=false}"          # delete an existing instance of that name first
 
 # ---- guest ---------------------------------------------------------------
-: "${USER_NAME:=debian}"
+: "${USER_NAME:=ubuntu}"
 : "${USER_UID:=1000}"
 : "${USER_PASSWORD:=password}"
 : "${USER_SHELL:=/bin/bash}"
@@ -57,8 +57,8 @@ set -euo pipefail
 
 REF="${INCUS_REMOTE:+$INCUS_REMOTE:}$INSTANCE_NAME"
 
-log() { printf '\033[1;34m[create_incus_debian13]\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31m[create_incus_debian13] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+log() { printf '\033[1;34m[create_incus_ubuntu2404]\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31m[create_incus_ubuntu2404] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v incus >/dev/null || die "the incus client is not in PATH"
 incus info "${INCUS_REMOTE:+$INCUS_REMOTE:}" >/dev/null 2>&1 || die "cannot reach the incus daemon (remote '${INCUS_REMOTE:-default}')"
@@ -133,7 +133,7 @@ fi
 log "waiting for the network of $REF"
 ready=false
 for _ in $(seq 1 "$WAIT_NETWORK_SECONDS"); do
-	if incus exec "$REF" -- sh -c 'getent hosts deb.debian.org >/dev/null 2>&1'; then
+	if incus exec "$REF" -- sh -c 'getent hosts archive.ubuntu.com >/dev/null 2>&1'; then
 		ready=true
 		break
 	fi
@@ -207,6 +207,16 @@ else
 	getent group "$USER_UID" >/dev/null || groupadd -g "$USER_UID" "$USER_NAME"
 	useradd -m -u "$USER_UID" -g "$USER_UID" -d "/home/$USER_NAME" -s "$USER_SHELL" "$USER_NAME"
 fi
+# Ubuntu images may ship a user with this name and uid already, without a home.
+if [ ! -d "/home/$USER_NAME" ]; then
+	mkdir -p "/home/$USER_NAME"
+	cp -rT /etc/skel "/home/$USER_NAME"
+	chown -R "$USER_UID:$(id -g "$USER_NAME")" "/home/$USER_NAME"
+fi
+usermod -d "/home/$USER_NAME" -s "$USER_SHELL" "$USER_NAME"
+# The image grants `ubuntu` passwordless sudo (90-incus): sudo asks for the password
+# unless USER_SUDO_NOPASSWD=true, which writes its own file below.
+rm -f /etc/sudoers.d/90-incus
 echo "$USER_NAME:$USER_PASSWORD" | chpasswd
 if is_true "$USER_SUDO"; then
 	usermod -aG sudo "$USER_NAME"
@@ -264,9 +274,9 @@ if is_true "$INSTALL_DOCKER"; then
 	installed=false
 	if [ "$DOCKER_SOURCE" = official ]; then
 		install -m 0755 -d /etc/apt/keyrings
-		if curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc; then
+		if curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
 			chmod a+r /etc/apt/keyrings/docker.asc
-			echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" >/etc/apt/sources.list.d/docker.list
+			echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$UBUNTU_CODENAME") stable" >/etc/apt/sources.list.d/docker.list
 			if apt-get update -qq && apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
 				installed=true
 			else

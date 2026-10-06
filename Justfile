@@ -72,6 +72,10 @@ smoke-minimal tag="latest" cycles="3":
 smoke-incus tag="latest" cycles="3":
     tests/smoke.incus.sh {{ image_incus }}:{{ tag }} {{ cycles }}
 
+# Instance templates (needs internet): just templates-incus latest ubuntu2404 fedora ; no names = all five
+templates-incus tag="latest" *templates:
+    tests/templates.sh {{ image_incus }}:{{ tag }} {{ templates }}
+
 # Print the image names the build recipes use
 names:
     @echo "full:    {{ image_full }}"

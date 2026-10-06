@@ -23,9 +23,10 @@ set -euo pipefail
 : "${INSTANCE_IPV4:=}"                   # fixed address on the managed bridge, e.g. 10.10.200.50
 : "${INSTANCE_MEMORY=2GiB}"              # limits.memory; set it empty for no limit
 : "${INSTANCE_CPU=2}"                    # limits.cpu; set it empty for no limit
+: "${INSTANCE_SWAP:=}"                    # swap the instance may use, e.g. 1GiB; 0 or off = none; empty = Incus default (none)
 : "${INSTANCE_DISK_SIZE:=}"              # root disk size, e.g. 20GiB (needs a btrfs/lvm/zfs pool)
 : "${INSTANCE_NESTING:=true}"            # security.nesting, needed by Docker
-: "${INSTANCE_INTERCEPT:=true}"          # security.syscalls.intercept.mknod/setxattr
+: "${INSTANCE_INTERCEPT:=true}"          # security.syscalls.intercept.mknod/setxattr/sysinfo (sysinfo: free, top of busybox see the limits)
 : "${INSTANCE_PRIVILEGED:=false}"        # security.privileged
 : "${INSTANCE_AUTOSTART:=true}"          # boot.autostart
 : "${INSTANCE_CONFIG:=}"                 # extra "key=value key=value" instance config
@@ -62,6 +63,33 @@ command -v incus >/dev/null || die "the incus client is not in PATH"
 incus info "${INCUS_REMOTE:+$INCUS_REMOTE:}" >/dev/null 2>&1 || die "cannot reach the incus daemon (remote '${INCUS_REMOTE:-default}')"
 case "$USER_NAME" in root | "") die "USER_NAME must not be root or empty" ;; esac
 
+# memory.swap.max in bytes. Incus has no swap size for containers (limits.memory.swap
+# is a bool, and with a memory limit the cgroup gets 0): the size goes into raw.lxc.
+swap_bytes=""
+case "$INSTANCE_SWAP" in
+"") ;;
+0 | off | none | no) swap_bytes=0 ;;
+*)
+	if [[ "$INSTANCE_SWAP" =~ ^([0-9]+)[[:space:]]*(B|K|KB|KiB|kB|M|MB|MiB|G|GB|GiB|T|TB|TiB)?$ ]]; then
+		n="${BASH_REMATCH[1]}"
+		case "${BASH_REMATCH[2]:-B}" in
+		B) mul=1 ;;
+		K | KiB) mul=1024 ;;
+		kB | KB) mul=1000 ;;
+		M | MiB) mul=1048576 ;;
+		MB) mul=1000000 ;;
+		G | GiB) mul=1073741824 ;;
+		GB) mul=1000000000 ;;
+		T | TiB) mul=1099511627776 ;;
+		TB) mul=1000000000000 ;;
+		esac
+		swap_bytes=$((n * mul))
+	else
+		die "INSTANCE_SWAP '$INSTANCE_SWAP' is not a size (e.g. 512MiB, 1GiB, 0)"
+	fi
+	;;
+esac
+
 # ---- create --------------------------------------------------------------
 if incus info "$REF" >/dev/null 2>&1; then
 	if [ "$INSTANCE_RECREATE" = true ]; then
@@ -78,10 +106,15 @@ for p in $INSTANCE_PROFILES; do launch+=(-p "$p"); done
 [ -z "$INSTANCE_NETWORK" ] || launch+=(-n "$INSTANCE_NETWORK")
 [ -z "$INSTANCE_MEMORY" ] || launch+=(-c "limits.memory=$INSTANCE_MEMORY")
 [ -z "$INSTANCE_CPU" ] || launch+=(-c "limits.cpu=$INSTANCE_CPU")
+if [ "$swap_bytes" = 0 ]; then
+	launch+=(-c limits.memory.swap=false)
+elif [ -n "$swap_bytes" ]; then
+	launch+=(-c "raw.lxc=lxc.cgroup2.memory.swap.max = $swap_bytes")
+fi
 launch+=(-c "security.nesting=$INSTANCE_NESTING" -c "boot.autostart=$INSTANCE_AUTOSTART")
 [ "$INSTANCE_PRIVILEGED" != true ] || launch+=(-c security.privileged=true)
 if [ "$INSTANCE_INTERCEPT" = true ]; then
-	launch+=(-c security.syscalls.intercept.mknod=true -c security.syscalls.intercept.setxattr=true)
+	launch+=(-c security.syscalls.intercept.mknod=true -c security.syscalls.intercept.setxattr=true -c security.syscalls.intercept.sysinfo=true)
 fi
 for kv in $INSTANCE_CONFIG; do launch+=(-c "$kv"); done
 [ -z "$INSTANCE_DISK_SIZE" ] || launch+=(-d "root,size=$INSTANCE_DISK_SIZE")
@@ -239,6 +272,10 @@ EOF
 	# controllers to the cgroups Docker creates: `docker run -m/--cpus` fails
 	# with "memory.max: no such file". Move them aside and enable the
 	# controllers before dockerd starts (systemd images do this by themselves).
+	# The target is named init.scope on purpose: lxcfs prunes that suffix when it
+	# reads the usage of the instance (/proc/meminfo, free, top, htop); any other
+	# name (it was "init") makes it read an empty cgroup, so everything shows
+	# 0 used while the limit is right.
 	cat >/etc/init.d/cgroup-delegate <<'SERVICE'
 #!/sbin/openrc-run
 description="Delegate the cgroup v2 controllers (limits of nested Docker containers)"
@@ -249,11 +286,11 @@ depend() {
 start() {
 	root=/sys/fs/cgroup
 	[ -f "$root/cgroup.controllers" ] || return 0
-	mkdir -p "$root/init"
+	mkdir -p "$root/init.scope"
 	tries=0
 	while [ "$tries" -lt 25 ]; do
 		for pid in $(cat "$root/cgroup.procs"); do
-			echo "$pid" >"$root/init/cgroup.procs" 2>/dev/null || true
+			echo "$pid" >"$root/init.scope/cgroup.procs" 2>/dev/null || true
 		done
 		ok=true
 		for c in $(cat "$root/cgroup.controllers"); do

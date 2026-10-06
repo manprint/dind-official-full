@@ -10,3 +10,6 @@
 !entrypoint.incus.sh
 !scripts/create_incus_alpine.sh
 !scripts/create_incus_debian13.sh
+!scripts/create_incus_ubuntu2404.sh
+!scripts/create_incus_ubuntu2604.sh
+!scripts/create_incus_fedora.sh

@@ -230,9 +230,12 @@ RUN set -eux; \
 	ln -sfn .profile /home/alpine/.bash_profile; \
 	chown alpine:alpine /home/alpine/.bashrc /home/alpine/.bash_aliases /home/alpine/.profile /home/alpine/.bash_profile
 
-# Templates that create and provision an Alpine / Debian 13 Incus container;
+# Templates that create and provision an Alpine / Debian 13 / Ubuntu 24.04 / Ubuntu 26.04 / Fedora Incus container;
 # copy them where an incus client runs and launch them (see README_INCUS.md).
-COPY --chown=alpine:alpine --chmod=0755 scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh /opt/incus-template/
+COPY --chown=alpine:alpine --chmod=0755 \
+	scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh \
+	scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh \
+	/opt/incus-template/
 
 COPY entrypoint.incus.sh /usr/local/bin/dev-entrypoint-incus.sh
 RUN chmod +x /usr/local/bin/dev-entrypoint-incus.sh

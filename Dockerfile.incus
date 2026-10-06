@@ -132,6 +132,7 @@ RUN set -eux; \
 		nftables \
 		ngrep \
 		nmap \
+		openssh-client \
 		openssl \
 		raft-cowsql \
 		ripgrep \

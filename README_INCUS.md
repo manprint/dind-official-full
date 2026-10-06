@@ -8,6 +8,7 @@ Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container 
 - Preseed al primo avvio: pool di storage `default`, bridge `incusbr0`, profilo `default`.
 - Stessa base della variante minimal: utente `alpine` + sudo, rclone, fuse, dotfile con prompt `alpine@host(env)(branch)`, `DIND_ENVIRONMENT_NAME`.
 - Nessun Docker dentro l'immagine (Docker si installa *dentro* le istanze, vedi sotto).
+- **Template per creare istanze** (Alpine 3.24, Debian 13) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: vedi la sezione dedicata.
 
 ## Avvio
 
@@ -191,6 +192,90 @@ Provato su Debian 12 (systemd): `docker run`, `--restart unless-stopped`, `-m 10
 | `lvm` con `lvm.use_thinpool=false` | OK |
 | `zfs` | assente (`zpool` non nell'immagine) |
 
+## Template per creare istanze: `/opt/incus-template`
+
+Due script, già nell'immagine in `/opt/incus-template/` (proprietà `alpine`, eseguibili) e in `scripts/` nel repository:
+
+- `create_incus_alpine.sh` (default `images:alpine/3.24`, utente `alpine`)
+- `create_incus_debian13.sh` (default `images:debian/13`, utente `debian`)
+
+Si copiano dove serve (un container con il client `incus`, un'altra macchina con `INCUS_REMOTE=...`) e si lanciano. Creano l'istanza e la configurano:
+
+| Cosa | Dettaglio |
+|---|---|
+| utente | uid **1000** (configurabile) con gruppo, home e shell bash; password `password`; gruppo `sudo`/`wheel` (sudo chiede la password, `USER_SUDO_NOPASSWD=true` per toglierla) |
+| ora, lingua, tastiera | `Europe/Rome`, locale `it_IT.UTF-8` (`LANG`, `LC_ALL`, `LANGUAGE`), tastiera `it` (`/etc/default/keyboard`, `/etc/vconsole.conf` su Debian) |
+| ssh | server installato e attivo, accesso con password, **root disabilitato** |
+| Docker | Alpine: pacchetti `docker` + `docker-cli-compose`; Debian: repository ufficiale Docker (`docker-ce` + plugin compose; se fallisce ricade su `docker.io`). L'utente è nel gruppo `docker`, `daemon.json` con rotazione dei log |
+| rete | `ip`, `ping`, `dig`, `tcpdump`, `traceroute`, `mtr`, `nmap`, `nc`, `socat`, `iperf3`, `ethtool`, `ss`/`netstat`, `conntrack`, `iptables`, `nft` |
+| rclone + fuse | rclone ufficiale (ultima release, checksum verificato), `fuse`/`fuse3`, `user_allow_other` in `/etc/fuse.conf` |
+| altro | git, curl, wget, rsync, unzip, jq, htop, lsof, vim, nano |
+
+L'istanza nasce con `security.nesting=true` (serve a Docker), intercettazione di `mknod`/`setxattr`, `limits.memory=2GiB`, `limits.cpu=2`, `boot.autostart=true`.
+
+Esempi:
+
+```bash
+/opt/incus-template/create_incus_alpine.sh
+INSTANCE_NAME=web INSTANCE_MEMORY=4GiB INSTANCE_IPV4=10.10.200.50 USER_PASSWORD=altra /opt/incus-template/create_incus_debian13.sh
+INSTANCE_RECREATE=true INSTALL_DOCKER=false INSTANCE_SSH_PUBLISH_PORT=2222 /opt/incus-template/create_incus_alpine.sh
+```
+
+Una password debole come `password` va cambiata (o `SSH_PASSWORD_AUTH=no` con chiavi) prima di esporre l'istanza.
+
+### Variabili (le stesse nei due script salvo dove indicato)
+
+Tutte con un default in testata, sovrascrivibili dall'ambiente.
+
+| Variabile | Default | Effetto |
+|---|---|---|
+| `INCUS_REMOTE` | vuoto | remote `incus` da usare |
+| `INSTANCE_NAME` | `alpine-dev` / `debian13-dev` | nome (anche hostname) |
+| `INSTANCE_IMAGE` | `images:alpine/3.24` / `images:debian/13` | immagine |
+| `INSTANCE_PROFILES` | `default` | profili, separati da spazio |
+| `INSTANCE_STORAGE_POOL`, `INSTANCE_NETWORK` | vuoti | pool/rete se diversi dal profilo |
+| `INSTANCE_IPV4` | vuoto | indirizzo fisso sul bridge gestito |
+| `INSTANCE_MEMORY`, `INSTANCE_CPU` | `2GiB`, `2` | `limits.memory`, `limits.cpu` (vuoto = nessun limite) |
+| `INSTANCE_DISK_SIZE` | vuoto | dimensione disco root (pool btrfs/lvm) |
+| `INSTANCE_NESTING`, `INSTANCE_INTERCEPT`, `INSTANCE_PRIVILEGED`, `INSTANCE_AUTOSTART` | `true`, `true`, `false`, `true` | `security.nesting`, intercept `mknod`/`setxattr`, `security.privileged`, `boot.autostart` |
+| `INSTANCE_CONFIG` | vuoto | altre chiavi `key=value` separate da spazio |
+| `INSTANCE_SSH_PUBLISH_PORT` | vuoto | porta dell'host incus inoltrata alla 22 (device `proxy`) |
+| `INSTANCE_RECREATE` | `false` | cancella un'istanza esistente con lo stesso nome (altrimenti errore) |
+| `USER_NAME`, `USER_UID` | `alpine`/`debian`, `1000` | utente |
+| `USER_PASSWORD`, `USER_SHELL` | `password`, `/bin/bash` | |
+| `USER_SUDO`, `USER_SUDO_NOPASSWD` | `true`, `false` | |
+| `TIMEZONE`, `LOCALE`, `KEYMAP` | `Europe/Rome`, `it_IT.UTF-8`, `it` | |
+| `SSH_PASSWORD_AUTH`, `SSH_PERMIT_ROOT` | `yes`, `no` | |
+| `INSTALL_DOCKER`, `INSTALL_NET_TOOLS`, `INSTALL_RCLONE` | `true` | |
+| `DOCKER_SOURCE` (solo Debian) | `official` | `official` o `distro` (`docker.io`) |
+| `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE` | `10m`, `5` | |
+| `RCLONE_RELEASE` | `current` | o una versione, es. `v1.70.0` (non `RCLONE_VERSION`: rclone la legge come `--version`) |
+| `EXTRA_PACKAGES` | vuoto | altri pacchetti apk/apt |
+| `WAIT_NETWORK_SECONDS` | `90` | attesa di rete/DNS prima di installare |
+
+### Docker annidato su Alpine
+
+OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non può delegare i controller ai cgroup di Docker (`docker run -m` falliva con *memory.max: no such file*). Lo script Alpine installa il servizio OpenRC `cgroup-delegate` (prima di `docker`, al boot) che sposta i processi in `/sys/fs/cgroup/init` e abilita i controller: con questo `-m 100m` e `--cpus 0.5` funzionano, anche dopo un riavvio dell'istanza. Su Debian lo fa systemd.
+
+### Verifica eseguita
+
+Su questo host, dentro il container Incus (bind mount): entrambi gli script da zero in ~25 s ciascuno.
+
+| Verifica | Alpine 3.24 | Debian 13 |
+|---|---|---|
+| utente uid 1000, home, gruppi (`wheel`/`sudo`, `docker`) | OK | OK |
+| login ssh con password; password errata e `root` rifiutati | OK | OK |
+| `LANG`/`LC_ALL=it_IT.UTF-8` (shell di login e ssh), `CEST`, hostname | OK | OK |
+| tastiera `it` | OK (`/etc/default/keyboard`) | OK (`/etc/default/keyboard`, `vconsole.conf`) |
+| `sudo` chiede la password, con la password funziona | OK | OK |
+| Docker 29.8.2 + Compose, `docker ps` come utente | OK | OK (repo ufficiale, Compose v5.6) |
+| `docker run -m 100m --cpus 0.5` | OK (`104857600`, `50000 100000`), anche dopo restart | OK |
+| rclone 1.75.1 (checksum ok), `user_allow_other` | OK | OK |
+| ssh e docker attivi dopo il riavvio dell'istanza | OK | OK |
+| strumenti di rete installati | OK | OK (9 su 9 verificati) |
+| variabili: `INSTANCE_IPV4`, `INSTANCE_SSH_PUBLISH_PORT`, utente/uid/password/timezone diversi, `EXTRA_PACKAGES`, `USER_SUDO_NOPASSWD`, `INSTALL_*=false`, memoria/CPU vuote | OK | non ripetuto (stesso codice dell'host) |
+| istanza già esistente: errore senza `INSTANCE_RECREATE=true` | OK | OK |
+
 ## Stabilità: cosa fa l'entrypoint
 
 tini è PID 1 (reaper, inoltra SIGTERM); l'entrypoint ne è l'unico figlio. Il daemon parte così:
@@ -243,6 +328,7 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 27 | Shell interattiva (`docker run -it`): prompt a colori con `(itenv)`, `exit` ferma il daemon pulito, nessun residuo | OK |
 | 28 | `tests/smoke.incus.sh` (18 controlli, 3 cicli di kill, su bind mount) | OK in ~30 s |
 | 29 | Build da zero (`just build-incus-clean`: `incusd` e UI compilati, checksum del sorgente verificato) + `tests/smoke.incus.sh` sull'immagine così costruita | OK, 18/18; build 1 min 8 s su questo host |
+| 32 | Template `create_incus_alpine.sh` / `create_incus_debian13.sh` (v. sezione dedicata): utente, ssh, locale/ora/tastiera, Docker annidato con limiti, rclone/fuse, variabili | OK su entrambi, ~25 s ciascuno |
 | 31 | Compose con **bind mount** su ext4 (`INCUS_DATA`/`ALPINE_HOME`): primo avvio, `docker restart`, 3 crash, `down`/`up`, istanze Debian (nesting) e Alpine con limiti | OK: stato identico ai named volume, home seminata (dotfile di `alpine`), `memory.max` e rete intatti |
 | 30 | **OpenTofu** (provider `lxc/incus`) dal host contro la porta 8443 pubblicata: `apply` con token, istanza `tf1` con `limits.memory` creata e `RUNNING`; dopo un crash del container `plan` senza drift; `destroy` | OK |
 

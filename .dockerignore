@@ -8,3 +8,5 @@
 !profile
 !Dockerfile.incus
 !entrypoint.incus.sh
+!scripts/create_incus_alpine.sh
+!scripts/create_incus_debian13.sh

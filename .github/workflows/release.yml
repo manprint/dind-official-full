@@ -59,7 +59,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: shellcheck
-        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh
+        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh
 
       - name: Compose files
         run: |

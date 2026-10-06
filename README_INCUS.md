@@ -214,6 +214,7 @@ Si copiano dove serve (un container con il client `incus`, un'altra macchina con
 | Docker | Alpine: pacchetti `docker` + `docker-cli-compose`; Debian: repository ufficiale Docker (`docker-ce` + plugin compose; se fallisce ricade su `docker.io`). L'utente è nel gruppo `docker`, `daemon.json` con rotazione dei log |
 | rete | `ip`, `ping`, `dig`, `tcpdump`, `traceroute`, `mtr`, `nmap`, `nc`, `socat`, `iperf3`, `ethtool`, `ss`/`netstat`, `conntrack`, `iptables`, `nft` |
 | rclone + fuse | rclone ufficiale (ultima release, checksum verificato), `fuse`/`fuse3`, `user_allow_other` in `/etc/fuse.conf` |
+| shell | `bash-completion` (anche per root) e alias **`ll='ls -alFh'` per tutti gli utenti**, shell di login e non (`/etc/profile.d/10-aliases.sh` + `/etc/bash/10-aliases.sh` su Alpine, `/etc/bash.bashrc` su Debian) |
 | altro | git, curl, wget, rsync, unzip, jq, htop, lsof, vim, nano |
 
 L'istanza nasce con `security.nesting=true` (serve a Docker), intercettazione di `mknod`/`setxattr`, `limits.memory=2GiB`, `limits.cpu=2`, `boot.autostart=true`.
@@ -271,6 +272,7 @@ Su questo host, dentro il container Incus (bind mount): entrambi gli script da z
 | utente uid 1000, home, gruppi (`wheel`/`sudo`, `docker`) | OK | OK |
 | login ssh con password; password errata e `root` rifiutati | OK | OK |
 | `LANG`/`LC_ALL=it_IT.UTF-8` (shell di login e ssh), `CEST`, hostname | OK | OK |
+| alias `ll` e completamento bash (utente e root, shell di login e non di login) | OK (194 completamenti su Alpine, 131 su Debian) | OK |
 | tastiera `it` | OK (`/etc/default/keyboard`) | OK (`/etc/default/keyboard`, `vconsole.conf`) |
 | `sudo` chiede la password, con la password funziona | OK | OK |
 | Docker 29.8.2 + Compose, `docker ps` come utente | OK | OK (repo ufficiale, Compose v5.6) |

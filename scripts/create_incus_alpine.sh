@@ -118,7 +118,7 @@ is_true() { [ "$1" = true ] || [ "$1" = yes ] || [ "$1" = 1 ]; }
 
 say "packages"
 apk update
-pkgs="bash shadow sudo openssh tzdata musl-locales musl-locales-lang kbd-bkeymaps alpine-conf
+pkgs="bash bash-completion shadow sudo openssh tzdata musl-locales musl-locales-lang kbd-bkeymaps alpine-conf
 	curl wget ca-certificates openssl git vim nano rsync unzip jq htop lsof fuse fuse3 $EXTRA_PACKAGES"
 if is_true "$INSTALL_NET_TOOLS"; then
 	pkgs="$pkgs iproute2 iputils bind-tools tcpdump traceroute mtr nmap nmap-ncat socat iperf3 ethtool net-tools conntrack-tools iptables nftables"
@@ -145,6 +145,14 @@ setup-keymap "$KEYMAP" "$KEYMAP" >/dev/null 2>&1 || true
 rc-update del loadkmap boot >/dev/null 2>&1 || true
 mkdir -p /etc/default
 printf 'XKBLAYOUT="%s"\nXKBMODEL="pc105"\n' "$KEYMAP" >/etc/default/keyboard
+
+say "aliases (every user)"
+# profile.d: login shells, root's ash included. /etc/bash/*.sh: every interactive
+# bash, login or not (Alpine's bash reads them from /etc/bash/bashrc, which also
+# loads bash-completion).
+printf '%s\n' "alias ll='ls -alFh'" >/etc/profile.d/10-aliases.sh
+printf '%s\n' "alias ll='ls -alFh'" >/etc/bash/10-aliases.sh
+chmod 0644 /etc/profile.d/10-aliases.sh /etc/bash/10-aliases.sh
 
 say "user $USER_NAME ($USER_UID)"
 if getent passwd "$USER_NAME" >/dev/null; then

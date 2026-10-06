@@ -148,6 +148,21 @@ echo "KEYMAP=$KEYMAP" >/etc/vconsole.conf
 echo "keyboard-configuration keyboard-configuration/layoutcode string $KEYMAP" | debconf-set-selections
 dpkg-reconfigure -f noninteractive keyboard-configuration >/dev/null 2>&1 || true
 
+say "aliases (every user)"
+# profile.d: login shells; /etc/bash.bashrc: every interactive bash, login or not.
+printf '%s\n' "alias ll='ls -alFh'" >/etc/profile.d/10-aliases.sh
+chmod 0644 /etc/profile.d/10-aliases.sh
+# The same file turns bash-completion on for root and any user whose ~/.bashrc does not.
+grep -q 'incus-template aliases' /etc/bash.bashrc ||
+	cat >>/etc/bash.bashrc <<'BASHRC'
+
+# incus-template aliases
+alias ll='ls -alFh'
+if ! shopt -oq posix && [ -r /usr/share/bash-completion/bash_completion ]; then
+	. /usr/share/bash-completion/bash_completion
+fi
+BASHRC
+
 say "user $USER_NAME ($USER_UID)"
 if getent passwd "$USER_NAME" >/dev/null; then
 	[ "$(id -u "$USER_NAME")" = "$USER_UID" ] || { echo "user $USER_NAME exists with another uid" >&2; exit 1; }

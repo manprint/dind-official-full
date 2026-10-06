@@ -55,6 +55,7 @@ Anche `privileged: true` funziona, ma non serve.
 | `INCUS_NAME` | `incus-env` | nome del container |
 | `INCUS_API_BIND` / `INCUS_API_PORT` | `127.0.0.1` / `8443` | indirizzo/porta host dell'API. L'API Incus equivale a root sull'host delle istanze: loopback di default, `0.0.0.0` solo con firewall/VPN |
 | `INCUS_IPV4`, `INCUS_NET_SUBNET`, `INCUS_NET_GATEWAY` | `10.10.170.1`, `10.10.170.0/24`, `10.10.170.254` | rete Docker dedicata del container |
+| `INCUS_DATA` / `ALPINE_HOME` | `./data/incus/data` / `./data/incus/alpine-home` | **bind mount** su `/var/lib/incus` (database, immagini, istanze, pool `dir`) e `/home/alpine`. Docker crea i path mancanti come root. Ogni istanza affiancata ne vuole di propri |
 | `DIND_ENVIRONMENT_NAME` | — | nome nel prompt |
 | `INCUS_ENV_STORAGE_DRIVER` | `dir` | driver del pool `default`, **solo al primo avvio** (`dir`, `btrfs`, `lvm`) |
 | `INCUS_ENV_STORAGE_SIZE` / `INCUS_ENV_STORAGE_SOURCE` | — | `size` (pool su file loop) / `source` (device o path), solo primo avvio |
@@ -241,8 +242,9 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 25 | `INCUS_ENV_TRUST_CERT_FILE` al primo avvio e a ogni riavvio | OK: un solo certificato `tofu` |
 | 26 | `INCUS_ENV_STORAGE_DRIVER=btrfs` + `SIZE=3GiB` | OK |
 | 27 | Shell interattiva (`docker run -it`): prompt a colori con `(itenv)`, `exit` ferma il daemon pulito, nessun residuo | OK |
-| 28 | `tests/smoke.incus.sh` (18 controlli, 3 cicli di kill) | OK in ~30 s |
+| 28 | `tests/smoke.incus.sh` (18 controlli, 3 cicli di kill, su bind mount) | OK in ~30 s |
 | 29 | Build da zero (`just build-incus-clean`: `incusd` e UI compilati, checksum del sorgente verificato) + `tests/smoke.incus.sh` sull'immagine così costruita | OK, 18/18; build 1 min 8 s su questo host |
+| 31 | Compose con **bind mount** su ext4 (`INCUS_DATA`/`ALPINE_HOME`): primo avvio, `docker restart`, 3 crash, `down`/`up`, istanze Debian (nesting) e Alpine con limiti | OK: stato identico ai named volume, home seminata (dotfile di `alpine`), `memory.max` e rete intatti |
 | 30 | **OpenTofu** (provider `lxc/incus`) dal host contro la porta 8443 pubblicata: `apply` con token, istanza `tf1` con `limits.memory` creata e `RUNNING`; dopo un crash del container `plan` senza drift; `destroy` | OK |
 
 ### Bug trovati dai test (e corretti)

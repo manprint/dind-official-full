@@ -1,8 +1,8 @@
 services:
   incus:
     image: ghcr.io/manprint/dind-official-full-incus:${INCUS_TAG:-latest}
-    # INCUS_NAME, INCUS_API_PORT and the volumes let several instances run side
-    # by side (each needs its own volumes: two incusd on one data directory
+    # INCUS_NAME, INCUS_API_PORT and the data paths let several instances run
+    # side by side (each needs its own paths: two incusd on one data directory
     # corrupt it, the second one refuses to start with exit 75).
     container_name: ${INCUS_NAME:-incus-env}
     hostname: incus
@@ -70,8 +70,11 @@ services:
       INCUS_ENV_TRUST_CERT_FILE: ${INCUS_ENV_TRUST_CERT_FILE:-}
       INCUS_ENV_TRUST_CERT_NAME: ${INCUS_ENV_TRUST_CERT_NAME:-}
     volumes:
-      - incus-data:/var/lib/incus
-      - alpine-home:/home/alpine
+      # Bind mounts: INCUS_DATA holds the database, the images and the instances
+      # (the `dir` storage pool lives here), ALPINE_HOME the home of alpine.
+      # Docker creates missing paths as root.
+      - ${INCUS_DATA:-./data/incus/data}:/var/lib/incus
+      - ${ALPINE_HOME:-./data/incus/alpine-home}:/home/alpine
     # incus stops the instances one by one (INCUS_ENV_SHUTDOWN_TIMEOUT, 100s by
     # default, is capped by this). Past the grace period Docker SIGKILLs it all
     # and the instances come back as after a crash.
@@ -95,10 +98,6 @@ services:
       # by default; INCUS_API_BIND=0.0.0.0 (or an address) exposes it to
       # OpenTofu/Terraform on other machines.
       - "${INCUS_API_BIND:-127.0.0.1}:${INCUS_API_PORT:-8443}:8443"
-
-volumes:
-  incus-data:
-  alpine-home:
 
 networks:
   incus:

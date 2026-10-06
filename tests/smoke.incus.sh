@@ -6,9 +6,9 @@
 #   tests/smoke.incus.sh IMAGE [CYCLES]
 #
 # Covers startup and preseed, the API and the web UI, an instance with limits
-# (memory, cpu) and its capabilities, a second container on the same volume
+# (memory, cpu) and its capabilities, a second container on the same data directory
 # (refused with 75, the first untouched), graceful stop, CYCLES hard kills
-# with stale runtime files planted in the data volume, a double SIGTERM and an
+# with stale runtime files planted in the data directory, a double SIGTERM and an
 # incusd crash. Needs a Docker host that allows --cap-add ALL with
 # systempaths=unconfined, cgroup v2 and /dev/fuse; no registry access, the
 # instance image is built from the container's own busybox. Everything it
@@ -20,8 +20,11 @@ CYCLES="${2:-3}"
 ID="incus-smoke-$$"
 MAIN="$ID-main"
 SECOND="$ID-second"
-DATA="$ID-data"
-HOMEV="$ID-home"
+# Bind mounts, like the compose file; root-owned files from the container are
+# removed from inside it.
+BASE="$(mktemp -d)"
+DATA="$BASE/data"
+HOMEV="$BASE/home"
 
 RUN_FLAGS=(
 	--cap-add ALL
@@ -38,7 +41,8 @@ RUN_FLAGS=(
 
 cleanup() {
 	docker rm -f "$MAIN" "$SECOND" >/dev/null 2>&1 || true
-	docker volume rm -f "$DATA" "$HOMEV" >/dev/null 2>&1 || true
+	docker run --rm -u 0 --entrypoint sh -v "$BASE":/b "$IMAGE" -c 'rm -rf /b/data /b/home' >/dev/null 2>&1 || true
+	rm -rf "$BASE"
 }
 trap cleanup EXIT
 
@@ -99,8 +103,7 @@ check_state() {
 }
 
 echo "== $IMAGE"
-docker volume create "$DATA" >/dev/null
-docker volume create "$HOMEV" >/dev/null
+mkdir -p "$DATA" "$HOMEV"
 docker run -d --name "$MAIN" "${RUN_FLAGS[@]}" "$IMAGE" >/dev/null
 wait_ready
 wait_configured
@@ -179,12 +182,12 @@ for _ in $(seq 1 60); do
 	[ "$(docker inspect -f '{{.State.Running}}' "$SECOND")" = false ] && break
 	sleep 1
 done
-[ "$(docker inspect -f '{{.State.ExitCode}}' "$SECOND")" = 75 ] || fail "second container on the same volume did not exit 75"
+[ "$(docker inspect -f '{{.State.ExitCode}}' "$SECOND")" = 75 ] || fail "second container on the same data directory did not exit 75"
 docker logs "$SECOND" 2>&1 | grep -q 'another incusd holds' || fail "second container did not say why"
 in_main incus list smk -c s -f csv | grep -q RUNNING || fail "first container lost its instance to the second"
 in_main incus info >/dev/null || fail "first container lost its socket to the second"
 docker rm -f "$SECOND" >/dev/null
-ok "second container on the same volume refused with 75, the first untouched"
+ok "second container on the same data directory refused with 75, the first untouched"
 
 before_stop=$(count 'stopping incus')
 start=$(date +%s)

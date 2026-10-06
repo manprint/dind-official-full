@@ -128,9 +128,11 @@ RUN set -eux; \
 		ncurses \
 		net-tools \
 		netcat-openbsd \
+		nginx \
 		nftables \
 		ngrep \
 		nmap \
+		openssl \
 		raft-cowsql \
 		ripgrep \
 		rsync \
@@ -235,7 +237,8 @@ COPY entrypoint.incus.sh /usr/local/bin/dev-entrypoint-incus.sh
 RUN chmod +x /usr/local/bin/dev-entrypoint-incus.sh
 
 # 8443: API and web UI (/ui/), TLS with client certificates only.
-EXPOSE 8443
+# 8080: the same web UI through a proxy that holds the client certificate.
+EXPOSE 8443 8080
 VOLUME ["/var/lib/incus", "/home/alpine"]
 
 USER alpine

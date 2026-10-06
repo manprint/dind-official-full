@@ -16,6 +16,11 @@ BRIDGE=incusbr0
 # stop_grace_period: past that Docker SIGKILLs everything, and the instances
 # come back as after a crash.
 SHUTDOWN_TIMEOUT="${INCUS_ENV_SHUTDOWN_TIMEOUT:-100}"
+# Web UI proxy: nginx on UI_PORT, holding a client certificate incus trusts.
+UI_PID=""
+UI_PORT=8080
+UI_CERT_DIR=/home/alpine/.config/incus-ui
+UI_RUN_DIR=/tmp/incus-ui
 
 as_root() {
 	if [ "$UID_NOW" = "0" ]; then
@@ -183,6 +188,7 @@ stop_incusd() {
 # The trap is disarmed first so that a second `docker stop` cannot re-enter.
 shutdown() {
 	trap '' INT TERM
+	[ -z "$UI_PID" ] || kill -TERM "$UI_PID" 2>/dev/null || true
 	stop_incusd
 	exit "${1:-0}"
 }
@@ -444,6 +450,114 @@ configure_incus() {
 	fi
 }
 
+# The web UI needs a trusted client certificate in the browser, which means
+# generating, downloading, importing and restarting the browser. Instead, nginx
+# listens on plain HTTP (UI_PORT) and talks to the API with a certificate this
+# script generates once and trusts; the browser needs nothing. Whoever reaches
+# the port is an Incus admin, so compose binds it to loopback, and
+# INCUS_ENV_UI_PASSWORD adds HTTP basic auth. INCUS_ENV_UI_PROXY=off disables it.
+# Nothing here may keep the daemon down.
+start_ui_proxy() {
+	case "${INCUS_ENV_UI_PROXY:-on}" in off | none | false | no | 0) return 0 ;; esac
+	https="${INCUS_ENV_HTTPS_ADDRESS:-:8443}"
+	case "$https" in
+	none | off | "")
+		echo "[incus-entrypoint] web UI proxy skipped: the API is off (INCUS_ENV_HTTPS_ADDRESS=$https)"
+		return 0
+		;;
+	esac
+	api_port="${https##*:}"
+	case "$api_port" in "" | *[!0-9]*)
+		echo "[incus-entrypoint] WARNING: web UI proxy skipped, cannot read a port from INCUS_ENV_HTTPS_ADDRESS '$https'" >&2
+		return 0
+		;;
+	esac
+	if ! command -v nginx >/dev/null 2>&1; then
+		echo "[incus-entrypoint] WARNING: web UI proxy skipped, nginx is missing" >&2
+		return 0
+	fi
+	if ! mkdir -p "$UI_CERT_DIR" "$UI_RUN_DIR" 2>/dev/null || ! chmod 700 "$UI_CERT_DIR" 2>/dev/null; then
+		echo "[incus-entrypoint] WARNING: web UI proxy skipped, cannot write $UI_CERT_DIR" >&2
+		return 0
+	fi
+	crt="$UI_CERT_DIR/client.crt"
+	key="$UI_CERT_DIR/client.key"
+	if [ ! -s "$crt" ] || [ ! -s "$key" ]; then
+		echo "[incus-entrypoint] generating the web UI client certificate in $UI_CERT_DIR"
+		rm -f "$crt" "$key"
+		if ! openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+			-days 3650 -subj "/CN=incus-ui" -keyout "$key" -out "$crt" >/dev/null 2>&1; then
+			echo "[incus-entrypoint] WARNING: web UI proxy skipped, openssl failed" >&2
+			rm -f "$crt" "$key"
+			return 0
+		fi
+		chmod 600 "$key"
+	fi
+	out="$(timeout 30 incus config trust add-certificate "$crt" --name incus-ui 2>&1)" ||
+		case "$out" in
+		*"already"*) ;;
+		*)
+			echo "[incus-entrypoint] WARNING: web UI proxy skipped, cannot trust its certificate: $out" >&2
+			return 0
+			;;
+		esac
+
+	auth=""
+	if [ -n "${INCUS_ENV_UI_PASSWORD:-}" ]; then
+		hash="$(printf '%s' "$INCUS_ENV_UI_PASSWORD" | openssl passwd -apr1 -stdin 2>/dev/null)" || hash=""
+		if [ -z "$hash" ]; then
+			echo "[incus-entrypoint] WARNING: web UI proxy skipped, cannot hash INCUS_ENV_UI_PASSWORD" >&2
+			return 0
+		fi
+		(umask 077 && printf '%s:%s\n' "${INCUS_ENV_UI_USER:-admin}" "$hash" >"$UI_RUN_DIR/htpasswd")
+		auth="auth_basic \"Incus UI\"; auth_basic_user_file $UI_RUN_DIR/htpasswd;"
+	fi
+
+	cat >"$UI_RUN_DIR/nginx.conf" <<NGINX
+worker_processes 1;
+pid $UI_RUN_DIR/nginx.pid;
+error_log stderr warn;
+events { worker_connections 1024; }
+http {
+	access_log off;
+	client_body_temp_path $UI_RUN_DIR/body;
+	proxy_temp_path $UI_RUN_DIR/proxy;
+	fastcgi_temp_path $UI_RUN_DIR/fastcgi;
+	uwsgi_temp_path $UI_RUN_DIR/uwsgi;
+	scgi_temp_path $UI_RUN_DIR/scgi;
+	map \$http_upgrade \$connection_upgrade { default upgrade; "" close; }
+	server {
+		listen $UI_PORT;
+		client_max_body_size 0;
+		$auth
+		absolute_redirect off;
+		location = / { return 302 /ui/; }
+		location / {
+			proxy_pass https://127.0.0.1:$api_port;
+			proxy_http_version 1.1;
+			proxy_ssl_certificate $crt;
+			proxy_ssl_certificate_key $key;
+			proxy_ssl_verify off;
+			proxy_set_header Host \$http_host;
+			proxy_set_header Upgrade \$http_upgrade;
+			proxy_set_header Connection \$connection_upgrade;
+			proxy_buffering off;
+			proxy_request_buffering off;
+			proxy_read_timeout 1h;
+			proxy_send_timeout 1h;
+		}
+	}
+}
+NGINX
+	if ! nginx -t -c "$UI_RUN_DIR/nginx.conf" >/dev/null 2>&1; then
+		echo "[incus-entrypoint] WARNING: web UI proxy skipped, invalid nginx configuration" >&2
+		return 0
+	fi
+	nginx -c "$UI_RUN_DIR/nginx.conf" -g 'daemon off;' &
+	UI_PID=$!
+	echo "[incus-entrypoint] web UI on http://HOST:$UI_PORT/ (no browser certificate needed)"
+}
+
 prepare_home
 write_env_name
 cleanup_stale_runtime_state
@@ -467,6 +581,7 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
 	INCUSD_PID=$!
 	if wait_incus; then
 		configure_incus
+		start_ui_proxy
 		if [ -t 0 ]; then
 			run_as_alpine_child /bin/bash -l || true
 			shutdown

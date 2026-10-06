@@ -133,6 +133,13 @@ ok "cgroup v2: processes in init.scope, controllers enabled"
 in_main curl -sk https://127.0.0.1:8443/1.0 | grep -q '"auth":"untrusted"' || fail "API on 8443 not answering"
 ok "API and web UI on 8443 (untrusted without a certificate)"
 
+# The proxy on 8080 holds a generated, trusted certificate: no browser setup.
+[ "$(in_main curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ui/)" = 200 ] || fail "web UI proxy not serving /ui/ on 8080"
+in_main curl -s http://127.0.0.1:8080/1.0 | grep -q '"auth":"trusted"' || fail "web UI proxy is not a trusted client"
+[ "$(in_main curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/1.0/instances)" = 200 ] || fail "web UI proxy cannot list instances"
+[ "$(in_main sh -c 'incus config trust list --format csv | grep -c incus-ui')" = 1 ] || fail "incus-ui certificate not trusted exactly once"
+ok "web UI on 8080 without a browser certificate (proxy trusted as incus-ui)"
+
 # A rootfs from the container's own busybox: no registry needed.
 in_main sh -c '
 	set -e

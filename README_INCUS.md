@@ -3,7 +3,7 @@
 Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container di sistema, niente VM) dentro un container Docker. Branch `incus`, `Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`.
 
 - Daemon `incusd` compilato dai sorgenti (7.5.1; Alpine 3.24 pacchettizza solo la 7.0.1 LTS), client `incus`, `fuidshift`.
-- **Client web ufficiale** (`incus-ui-canonical`), servito dal daemon su `https://HOST:8443/ui/`.
+- **Client web ufficiale** (`incus-ui-canonical`), servito dal daemon su `https://HOST:8443/ui/` e, **senza nessun certificato nel browser**, su `http://HOST:8080/` tramite un proxy interno.
 - **API esposta** su 8443 (TLS, solo certificati client fidati): usabile da OpenTofu/Terraform.
 - Preseed al primo avvio: pool di storage `default`, bridge `incusbr0`, profilo `default`.
 - Stessa base della variante minimal: utente `alpine` + sudo, rclone, fuse, dotfile con prompt `alpine@host(env)(branch)`, `DIND_ENVIRONMENT_NAME`.
@@ -60,6 +60,9 @@ Anche `privileged: true` funziona, ma non serve.
 | `INCUS_ENV_STORAGE_DRIVER` | `dir` | driver del pool `default`, **solo al primo avvio** (`dir`, `btrfs`, `lvm`) |
 | `INCUS_ENV_STORAGE_SIZE` / `INCUS_ENV_STORAGE_SOURCE` | — | `size` (pool su file loop) / `source` (device o path), solo primo avvio |
 | `INCUS_ENV_BRIDGE_ADDRESS` | auto | CIDR IPv4 di `incusbr0`, es. `10.10.200.0/24` (un indirizzo di rete diventa il suo `.1`). Applicata **a ogni avvio**: cambiandola il bridge si sposta |
+| `INCUS_UI_BIND` / `INCUS_UI_PORT` | `127.0.0.1` / `8080` | indirizzo/porta host del proxy della web UI. Chi lo raggiunge è amministratore di Incus: loopback di default, `0.0.0.0` solo con `INCUS_ENV_UI_PASSWORD` |
+| `INCUS_ENV_UI_PROXY` | `on` | `off` spegne il proxy (resta la UI su 8443 con certificato nel browser) |
+| `INCUS_ENV_UI_USER` / `INCUS_ENV_UI_PASSWORD` | `admin` / — | con la password il proxy chiede HTTP basic auth |
 | `INCUS_ENV_HTTPS_ADDRESS` | `:8443` | `core.https_address`; `none` spegne API e UI. A ogni avvio |
 | `INCUS_ENV_TRUST_CERT_FILE` / `_NAME` | — | certificato client (PEM, leggibile nel container) da fidare a ogni avvio, idempotente |
 | `INCUS_ENV_SHUTDOWN_TIMEOUT` | `100` | secondi concessi a `incus admin shutdown` (tienila sotto `stop_grace_period`) |
@@ -77,7 +80,9 @@ docker exec incus-env incus config trust add tofu          # stampa il token
 INCUS_ENV_TRUST_CERT_FILE=/home/alpine/tofu.crt docker compose -f docker-compose.incus.yml up -d
 ```
 
-- **UI**: apri `https://HOST:8443/ui/`, segui la procedura di certificato/token della pagina di login.
+- **UI, senza passaggi**: apri `http://localhost:8080/` (porta `INCUS_UI_PORT`). Dentro il container nginx ascolta su 8080 e parla con l'API su 8443 presentando un certificato client che l'entrypoint genera una volta (`/home/alpine/.config/incus-ui/client.{crt,key}`, EC P-256, 10 anni) e fida da solo (nome `incus-ui`, riaggiunto a ogni avvio se manca). Il browser non importa nulla e la pagina *Setup Incus UI* non compare. WebSocket (console, eventi) e upload di immagini passano dal proxy.
+- **UI su 8443**: `https://HOST:8443/ui/` richiede nel browser un certificato fidato (pagina di login: *Generate* + `incus config trust add-certificate`, oppure token). Serve solo con `INCUS_ENV_UI_PROXY=off` o per un accesso diretto.
+- **Sicurezza del proxy**: l'accesso a 8080 vale come certificato fidato, cioè root sull'host delle istanze. Per questo è pubblicato su loopback; esponendolo in LAN imposta `INCUS_ENV_UI_PASSWORD` (basic auth, hash `apr1` in `/tmp/incus-ui/htpasswd`) e metti TLS davanti (reverse proxy), perché la basic auth su HTTP passa in chiaro.
 - **OpenTofu**: provider `lxc/incus`:
 
 ```hcl
@@ -329,6 +334,9 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 28 | `tests/smoke.incus.sh` (18 controlli, 3 cicli di kill, su bind mount) | OK in ~30 s |
 | 29 | Build da zero (`just build-incus-clean`: `incusd` e UI compilati, checksum del sorgente verificato) + `tests/smoke.incus.sh` sull'immagine così costruita | OK, 18/18; build 1 min 8 s su questo host |
 | 32 | Template `create_incus_alpine.sh` / `create_incus_debian13.sh` (v. sezione dedicata): utente, ssh, locale/ora/tastiera, Docker annidato con limiti, rclone/fuse, variabili | OK su entrambi, ~25 s ciascuno |
+| 33 | **Proxy web UI** su 8080: primo avvio genera e fida il certificato `incus-ui`; `/ui/` 200 e `/1.0` `auth: trusted` senza nulla nel browser; `/` → 302 `/ui/`; WebSocket `/1.0/events` → 101; ricreazione del container, `kill -9` del PID 1 e `docker stop`: stesso certificato, una sola voce nel trust store, stop 1 s exit 0 | OK |
+| 34 | Proxy con `INCUS_ENV_UI_PASSWORD`: senza credenziali o con password errata 401, corretta 200 | OK |
+| 35 | Smoke test (`tests/smoke.incus.sh`) con il controllo del proxy | OK, 19/19 |
 | 31 | Compose con **bind mount** su ext4 (`INCUS_DATA`/`ALPINE_HOME`): primo avvio, `docker restart`, 3 crash, `down`/`up`, istanze Debian (nesting) e Alpine con limiti | OK: stato identico ai named volume, home seminata (dotfile di `alpine`), `memory.max` e rete intatti |
 | 30 | **OpenTofu** (provider `lxc/incus`) dal host contro la porta 8443 pubblicata: `apply` con token, istanza `tf1` con `limits.memory` creata e `RUNNING`; dopo un crash del container `plan` senza drift; `destroy` | OK |
 

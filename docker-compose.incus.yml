@@ -64,6 +64,14 @@ services:
       # start, e.g. the one OpenTofu/Terraform presents.
       INCUS_ENV_TRUST_CERT_FILE: ${INCUS_ENV_TRUST_CERT_FILE:-}
       INCUS_ENV_TRUST_CERT_NAME: ${INCUS_ENV_TRUST_CERT_NAME:-}
+      # Web UI without a browser certificate: http://localhost:8080/ (see the
+      # ports below). A proxy inside the container talks to the API with a
+      # certificate it generates and trusts by itself. "off" disables it. With
+      # INCUS_ENV_UI_PASSWORD the proxy asks for HTTP basic auth (user
+      # INCUS_ENV_UI_USER, "admin" by default).
+      INCUS_ENV_UI_PROXY: ${INCUS_ENV_UI_PROXY:-on}
+      INCUS_ENV_UI_USER: ${INCUS_ENV_UI_USER:-}
+      INCUS_ENV_UI_PASSWORD: ${INCUS_ENV_UI_PASSWORD:-}
     volumes:
       # Bind mounts: INCUS_DATA holds the database, the images and the instances
       # (the `dir` storage pool lives here), ALPINE_HOME the home of alpine.
@@ -93,6 +101,9 @@ services:
       # by default; INCUS_API_BIND=0.0.0.0 (or an address) exposes it to
       # OpenTofu/Terraform on other machines.
       - "${INCUS_API_BIND:-127.0.0.1}:${INCUS_API_PORT:-8443}:8443"
+      # The web UI proxy: whoever reaches it is an Incus admin, so loopback by
+      # default. INCUS_UI_BIND=0.0.0.0 exposes it, set INCUS_ENV_UI_PASSWORD then.
+      - "${INCUS_UI_BIND:-127.0.0.1}:${INCUS_UI_PORT:-8080}:8080"
 
 networks:
   incus:

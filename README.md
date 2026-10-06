@@ -32,12 +32,14 @@ wget -qO docker-compose.minimal.bind.yml https://github.com/manprint/dind-offici
 docker compose -f docker-compose.minimal.bind.yml up -d
 ```
 
-I compose della release hanno l'immagine fissata alla versione e niente blocco `build:`; c'è anche `docker-compose.yml` (named volumes).
+I compose della release hanno l'immagine fissata alla versione; c'è anche `docker-compose.yml` (named volumes).
 
 ## Avvio
 
+I compose non buildano: usano `ghcr.io/manprint/dind-official-full[-minimal]:${DIND_TAG:-latest}`, scaricata se manca in locale. Per usare un'immagine buildata a mano, `just build` (o `just build-full` / `just build-minimal`) la tagga con quei nomi e `latest`, e `docker compose up -d` la prende senza pull.
+
 ```bash
-docker compose up --build -d
+docker compose up -d
 docker compose exec dind bash
 ```
 
@@ -59,7 +61,7 @@ Named volumes (default):
 Bind mount:
 
 ```bash
-docker compose -f docker-compose.bind.yml up --build -d
+docker compose -f docker-compose.bind.yml up -d
 ```
 
 Default host paths: `./data/docker` e `./data/alpine-home`. Override:
@@ -71,7 +73,7 @@ DOCKER_DATA=/path/docker ALPINE_HOME=/path/home docker compose -f docker-compose
 La versione minimal usa di default `./data/minimal/docker` e `./data/minimal/alpine-home`:
 
 ```bash
-docker compose -f docker-compose.minimal.bind.yml up --build -d
+docker compose -f docker-compose.minimal.bind.yml up -d
 ```
 
 Per cambiare i percorsi:
@@ -96,21 +98,33 @@ Un dotfile in `/home/alpine` senza il marker `dind-env-` (per esempio in una hom
 | `DIND_NAME` | `dind-env` / `dind-env-minimal` | nome del container |
 | `DIND_TLS_PORT` | `2376` | porta host (solo `127.0.0.1`) per l'API TLS |
 | `DIND_DNS` | vuoto | DNS dei container interni, es. `"10.0.0.2 10.0.0.3"` o separati da virgola |
+| `DIND_ENVIRONMENT_NAME` | vuoto | nome mostrato nel prompt, es. `myenv` → `alpine@dind(myenv)` |
+| `DOCKER_DAEMON_INTERNAL_BIP` | vuoto | subnet della bridge `docker0` interna, es. `10.10.100.0/24`: i container interni partono su questa rete |
+| `DIND_NET_SUBNET` | `10.10.160.0/24` | subnet della rete compose del container |
+| `DIND_IPV4` | `10.10.160.1` | IP del container su quella rete |
+| `DIND_NET_GATEWAY` | `10.10.160.254` | gateway della rete (l'host-side della bridge) |
 | `DOCKER_DATA` | `./data/docker` | solo bind: data-root di `dockerd` |
 | `ALPINE_HOME` | `./data/alpine-home` | solo bind: home di `alpine` |
 
 Senza `DIND_DNS` i container interni sulla bridge di default ripiegano su `8.8.8.8`/`8.8.4.4`: in reti che li bloccano, impostare i DNS aziendali. Le voci che non sono indirizzi IP vengono scartate con un warning, perché `dockerd` rifiuterebbe di partire.
+
+`DOCKER_DAEMON_INTERNAL_BIP` è un CIDR IPv4 con prefisso da `/8` a `/29` e diventa `--bip` di `dockerd`. Un indirizzo di rete (`10.10.100.0/24`) viene convertito nel primo host: la bridge prende `10.10.100.1/24` e i container interni da `.2` in poi. Un valore non valido viene scartato con un warning. Vale solo per la bridge di default: le reti definite dall'utente (compose incluso) usano ancora i pool di `dockerd`. Non combinarla con `--bip` nel `command:` né con `bip` in `/etc/docker/daemon.json`: `dockerd` rifiuta l'opzione data due volte (l'argomento esplicito prevale e la variabile viene ignorata con un warning). Cambiare la subnet con container interni già creati richiede di ricrearli, perché tengono l'indirizzo vecchio.
+
+Il prompt è colorato: `utente@host` verde per `alpine` e rosso per `root`, `(DIND_ENVIRONMENT_NAME)` giallo, il branch git `(main)` ciano, poi la directory in blu, es. `alpine@dind(myenv)(main):~/progetto$`. Il branch compare dentro qualunque repository, anche per `root` in un repository di `alpine`, ed è letto da `.git/HEAD` senza eseguire `git`: niente indicatori di modifiche, e su HEAD staccato mostra l'hash corto. Senza `DIND_ENVIRONMENT_NAME` la parte `(…)` non compare. Vale per le shell che leggono `~/.bashrc`: `exec … bash`, shell di login, `sudo su`, `sudo -i`, `sudo su -`. La shell di `root` è bash (non `ash`), quindi `sudo su` dà lo stesso prompt di `exec --user root … bash`. `sudo -i` e `su -` danno a root un ambiente pulito: il nome arriva dal file `/etc/dind-environment-name`, scritto dall'entrypoint a ogni avvio.
+
+Il container parte su una rete compose dedicata (`dind`), non su quella di default. Il container prende `10.10.160.1`, l'indirizzo che di norma Docker assegna al gateway: per questo il gateway è spostato su `10.10.160.254`. Se cambi `DIND_NET_SUBNET`, adatta anche `DIND_IPV4` e `DIND_NET_GATEWAY`, che devono stare nella nuova subnet ed essere diversi tra loro. La subnet non deve sovrapporsi a quella interna (`DOCKER_DAEMON_INTERNAL_BIP`, di default `172.17.0.0/16`) né a reti già presenti sull'host.
 
 ## Più istanze
 
 Ogni istanza ha bisogno di nome, porta e dati propri:
 
 ```bash
-DIND_NAME=dind-b DIND_TLS_PORT=2377 DOCKER_DATA=/srv/dind-b/docker ALPINE_HOME=/srv/dind-b/home \
+DIND_NAME=dind-b DIND_TLS_PORT=2377 DIND_NET_SUBNET=10.10.161.0/24 DIND_IPV4=10.10.161.1 DIND_NET_GATEWAY=10.10.161.254 \
+  DOCKER_DATA=/srv/dind-b/docker ALPINE_HOME=/srv/dind-b/home \
   docker compose -p dind-b -f docker-compose.bind.yml up -d
 ```
 
-Con `docker-compose.yml` bastano `-p`, `DIND_NAME` e `DIND_TLS_PORT`: i named volumes sono già separati per progetto.
+Una seconda istanza ha bisogno anche di una subnet e di un IP propri (`DIND_NET_SUBNET`, `DIND_IPV4`, `DIND_NET_GATEWAY`), perché due reti non possono avere la stessa subnet. Con `docker-compose.yml` bastano `-p`, `DIND_NAME`, `DIND_TLS_PORT` e i tre della rete: i named volumes sono già separati per progetto.
 
 ### Lock sul data-root
 

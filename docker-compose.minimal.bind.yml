@@ -1,9 +1,6 @@
 services:
   dind:
     image: ghcr.io/manprint/dind-official-full-minimal:${DIND_TAG:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.minimal
     # DIND_NAME, DIND_TLS_PORT and the data paths let several instances
     # run side by side.
     container_name: ${DIND_NAME:-dind-env-minimal}
@@ -32,6 +29,11 @@ services:
       # Resolvers for the inner containers, e.g. "10.0.0.2 10.0.0.3". Unset,
       # those on the inner default bridge fall back to 8.8.8.8/8.8.4.4.
       DIND_DNS: ${DIND_DNS:-}
+      # Subnet of the inner default bridge (docker0), e.g. "10.10.100.0/24":
+      # the inner containers start on it. Unset, dockerd keeps 172.17.0.0/16.
+      DOCKER_DAEMON_INTERNAL_BIP: ${DOCKER_DAEMON_INTERNAL_BIP:-}
+      # Shown in the shell prompt as user@host(name), e.g. "myenv".
+      DIND_ENVIRONMENT_NAME: ${DIND_ENVIRONMENT_NAME:-}
     volumes:
       - ${DOCKER_DATA:-./data/minimal/docker}:/var/lib/docker
       - ${ALPINE_HOME:-./data/minimal/alpine-home}:/home/alpine
@@ -48,8 +50,21 @@ services:
       timeout: 10s
       start_period: 120s
       retries: 3
+    # Own network instead of the default one. The container takes .1, the usual
+    # gateway address, so the bridge's gateway moves to DIND_NET_GATEWAY. Two
+    # instances side by side need a different DIND_NET_SUBNET each.
+    networks:
+      dind:
+        ipv4_address: ${DIND_IPV4:-10.10.160.1}
     ports:
       # With DOCKER_TLS_CERTDIR set (dind default) dockerd listens on 2376
       # only, so 2375 has no listener. Kept on loopback: the Docker API is
       # root-equivalent and must not be reachable from the network.
       - "127.0.0.1:${DIND_TLS_PORT:-2376}:2376"
+
+networks:
+  dind:
+    ipam:
+      config:
+        - subnet: ${DIND_NET_SUBNET:-10.10.160.0/24}
+          gateway: ${DIND_NET_GATEWAY:-10.10.160.254}

@@ -11,20 +11,24 @@ README is in Italian; container locale/timezone are `it_IT.UTF-8` / `Europe/Rome
 ## Commands
 
 ```bash
+# the compose files have no build: block, they run ghcr.io/manprint/dind-official-full[-minimal]:$DIND_TAG;
+# build locally under those names first (docker compose up -d then uses the local image, no pull)
+just build            # or build-full / build-minimal; build-clean = no cache
+
 # full variant, named volumes
-docker compose up --build -d
+docker compose up -d
 docker compose exec dind bash
 
 # interactive one-shot TTY (entrypoint drops into login shell when stdin is a TTY)
 docker compose run --rm dind
 
 # bind-mount variants (host paths overridable)
-docker compose -f docker-compose.bind.yml up --build -d
+docker compose -f docker-compose.bind.yml up -d
 DOCKER_DATA=/path/docker ALPINE_HOME=/path/home docker compose -f docker-compose.bind.yml up -d
-docker compose -f docker-compose.minimal.bind.yml up --build -d
+docker compose -f docker-compose.minimal.bind.yml up -d
 
-# a second instance next to the first: own project, name, port and data
-DIND_NAME=dind-b DIND_TLS_PORT=2377 DOCKER_DATA=/path/b/docker ALPINE_HOME=/path/b/home \
+# a second instance next to the first: own project, name, port, data and (DIND_NET_SUBNET/DIND_IPV4/DIND_NET_GATEWAY) network
+DIND_NAME=dind-b DIND_TLS_PORT=2377 DIND_NET_SUBNET=10.10.161.0/24 DIND_IPV4=10.10.161.1 DIND_NET_GATEWAY=10.10.161.254 DOCKER_DATA=/path/b/docker ALPINE_HOME=/path/b/home \
   docker compose -p dind-b -f docker-compose.bind.yml up -d
 
 # pull a pinned published tag instead of latest
@@ -40,7 +44,7 @@ docker build -t dind-test . && tests/smoke.sh dind-test 3
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-Compose variables: `DIND_TAG` (image tag), `DIND_NAME` (container name), `DIND_TLS_PORT` (host port for 2376), `DIND_DNS` (resolvers for the inner containers), and in the bind variants `DOCKER_DATA` / `ALPINE_HOME`.
+Compose variables: `DIND_TAG` (image tag), `DIND_NAME` (container name), `DIND_TLS_PORT` (host port for 2376), `DIND_DNS` (resolvers for the inner containers), `DOCKER_DAEMON_INTERNAL_BIP` (subnet of the inner `docker0`), `DIND_ENVIRONMENT_NAME` (label in the shell prompt), `DIND_NET_SUBNET` / `DIND_IPV4` / `DIND_NET_GATEWAY` (the compose network, default 10.10.160.0/24, container on .1, gateway on .254 because .1 is the bridge's usual gateway), and in the bind variants `DOCKER_DATA` / `ALPINE_HOME`.
 
 Port 2375 is deliberately not published: while `DOCKER_TLS_CERTDIR` keeps its dind default of `/certs`, dockerd listens on 2376 (TLS) only and nothing ever binds 2375. 2376 is loopback-only because the Docker API is root-equivalent; reaching it from the host also needs `/certs/client`, which no compose file mounts today.
 
@@ -48,7 +52,7 @@ All three compose files also set `restart: unless-stopped`, `stop_grace_period: 
 
 ## Testing
 
-`tests/smoke.sh IMAGE [CYCLES]` (bash, host side) runs the image on fresh volumes and stops at the first failed check: startup, tini running as subreaper, `DIND_DNS` (a bad entry dropped, the good ones in the inner `resolv.conf`), an unmarked `.bashrc` moved aside, `HOME` for alpine / `sudo` / `sudo -i` / `exec -u root`, an inner `--restart unless-stopped` workload, a second container on the same volumes refused with 75 while the first stays untouched, the command path next to the daemon, `docker stop`, `CYCLES` `docker kill`/`docker start` rounds, a double SIGTERM, and a SIGKILLed dockerd exiting non-zero and coming back. With PM2 present it also checks the full variant: venv on the login-shell PATH and writable, `pm2-logrotate` not restarted by the boot. The inner workload image is `docker import`ed from the dind container's own busybox and musl loader, so no registry is needed; everything is named `dind-smoke-<pid>-*` and removed on exit. CI runs it against every release digest before tagging.
+`tests/smoke.sh IMAGE [CYCLES]` (bash, host side) runs the image on fresh volumes and stops at the first failed check: startup, tini running as subreaper, `DIND_DNS` (a bad entry dropped, the good ones in the inner `resolv.conf`), `DOCKER_DAEMON_INTERNAL_BIP` (`docker0` gateway and an inner container's address on that subnet), an unmarked `.bashrc` moved aside, `HOME` for alpine / `sudo` / `sudo -i` / `exec -u root`, the prompt colours, `(env)` and `(branch)` for alpine and root, an inner `--restart unless-stopped` workload, a second container on the same volumes refused with 75 while the first stays untouched, the command path next to the daemon, `docker stop`, `CYCLES` `docker kill`/`docker start` rounds, a double SIGTERM, and a SIGKILLed dockerd exiting non-zero and coming back. With PM2 present it also checks the full variant: venv on the login-shell PATH and writable, `pm2-logrotate` not restarted by the boot. The inner workload image is `docker import`ed from the dind container's own busybox and musl loader, so no registry is needed; everything is named `dind-smoke-<pid>-*` and removed on exit. CI runs it against every release digest before tagging.
 
 Its log checks count over `docker logs`, which spans every boot of the container, so they compare deltas. A graceful stop must add exactly one `Processing signal 'terminated'` and one `Daemon shutdown complete`.
 
@@ -68,7 +72,7 @@ Argument dispatch at the bottom of both scripts:
 - first arg `dockerd` → `exec` the re-entry (lock included), no background daemon.
 - anything else → run it as `alpine` via upstream `docker-entrypoint.sh`.
 
-Both daemon paths refuse (exit 75) while a `dockerd` or `containerd` already runs in the container. The PID namespace is empty at container start, so that only happens when the script is re-run through `docker exec` — which used to strip the live daemon's pidfile and socket. They then turn `DIND_DNS` (space- or comma-separated) into one `--dns=` per entry; entries that are not IP addresses are dropped with a warning, because dockerd refuses to start on them and a typo must not keep it down after the next reboot.
+Both daemon paths refuse (exit 75) while a `dockerd` or `containerd` already runs in the container. The PID namespace is empty at container start, so that only happens when the script is re-run through `docker exec` — which used to strip the live daemon's pidfile and socket. They then turn `DIND_DNS` (space- or comma-separated) into one `--dns=` per entry; entries that are not IP addresses are dropped with a warning, because dockerd refuses to start on them and a typo must not keep it down after the next reboot. `DOCKER_DAEMON_INTERNAL_BIP` becomes `--bip` the same way: `normalize_bip()` accepts an IPv4 CIDR with prefix 8–29, turns a network address into its first host (`10.10.100.0/24` → `10.10.100.1/24`, which dockerd would otherwise take as the bridge IP itself) and drops anything else with a warning; an explicit `--bip` argument wins, since dockerd refuses the option twice. It only moves `docker0`: user-defined networks keep dockerd's default address pools.
 
 With a TTY, dockerd's output goes to `/var/log/dockerd.log` instead of the terminal the shell uses, and `supervise()` prints the log's tail if the daemon dies.
 
@@ -103,6 +107,8 @@ Dotfiles are baked into `/etc/skel` and into `/home/alpine` at build time, but `
 Consequence: `bashrc`, `bash_aliases`, and `profile` each carry a `# dind-env-*` marker comment on line 1–2. Removing it makes the entrypoint move the file aside at the next start. Keep the marker when editing these files.
 
 `prepare_home()` is best effort: a home that root cannot write (read-only mount, NFS with root_squash) must not keep the daemon from starting, so failures there are reported by the tools and ignored.
+
+The `bashrc` prompt is `user@host` (green, red for root) + `(DIND_ENVIRONMENT_NAME)` (yellow, omitted when empty) + `(branch)` (cyan) + `:dir`. `__dind_git_branch` reads `.git/HEAD` itself instead of running `git` or `__git_ps1`: root sits in alpine's checkouts, where git refuses with "dubious ownership", and a prompt running git as root would execute a repository's `core.fsmonitor`. The cost is no dirty/ahead indicators. root's login shell is set to `/bin/bash` in both Dockerfiles (Alpine's default is `/bin/sh`): `sudo su` and `sudo -i` use the passwd shell, and with ash they got no `.bashrc`, so no prompt. `sudo -i` / `su -` also give root a clean environment, so `write_env_name()` in the entrypoints mirrors `DIND_ENVIRONMENT_NAME` into `/etc/dind-environment-name` at each start, and `__dind_env_name` falls back to it. `git` itself is installed in both images.
 
 `bashrc` (interactive non-login shells, e.g. `docker compose exec dind bash`) and `profile` (login shells) both prepend `~/go/bin ~/.cargo/bin ~/bin ~/.local/bin` to `PATH`, skipping entries already present so nested shells do not grow it. Alpine's `/etc/profile` resets `PATH` for login shells; the full image's `/etc/profile.d/00dind-path.sh` restores the image `PATH` (venv, JDK) right after. `/etc/profile` is read by ash login shells too (root's `sudo -i`), so `20direnv.sh` hooks direnv into bash only.
 
@@ -143,9 +149,9 @@ Tag `vX.Y.Z` triggers:
 3. `build` — 4 jobs (full/minimal × amd64 on `ubuntu-24.04` / arm64 on `ubuntu-24.04-arm`, native runners, no QEMU), `no-cache` and `pull` on purpose: with a layer cache the `apk add` layer never changes until the Dockerfile does, and releases would keep shipping the same packages without their security fixes. Each pushes by digest only (`push-by-digest=true`, no tag) and uploads the digest as an artifact.
 4. `smoke` — per variant × arch, pulls that digest on its native runner and runs `tests/smoke.sh`.
 5. `merge` — needs prepare, lint and smoke. Per variant, `docker buildx imagetools create` assembles the manifest list from the digests and applies `X.Y.Z`, `X.Y`, `vX.Y.Z` and, for the highest release only, `latest` (`flavor: latest=false`, or metadata-action adds it to every semver tag by itself). A failed check leaves only untagged digests behind.
-6. `release` — rewrites all three compose files with an inline Python script that **strips the `build:` block and pins `image:` to the released version** (the build context is not part of the download), then attaches them to the GitHub Release, `make_latest` as decided by prepare.
+6. `release` — rewrites all three compose files with an inline Python script that **pins `image:` to the released version** (and would strip a `build:` block, should one come back: the compose files have none today, since the build context is not part of the download), then attaches them to the GitHub Release, `make_latest` as decided by prepare.
 
-That stamping script is indentation-sensitive: it detects `    build:` (4 spaces) and skips following lines indented deeper than 4 spaces, and rewrites any line starting with `    image:`. It asserts both happened, so re-indenting the `dind` service in a compose file now fails the release instead of silently breaking its assets.
+That stamping script is indentation-sensitive: it rewrites any line starting with `    image:` and, as a guard, drops a `    build:` (4 spaces) block with its deeper-indented lines. It asserts no `build:` is left and the pinned `image:` is there, so re-indenting the `dind` service in a compose file now fails the release instead of silently breaking its assets.
 
 Top-level permissions are `contents: read`; jobs raise what they need (`packages: write` for build and merge, `packages: read` for smoke, `contents: write` for release). Actions are pinned by commit SHA with the version in a comment, and `.github/dependabot.yml` proposes updates for them and for the base image weekly.
 

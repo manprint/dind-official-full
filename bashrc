@@ -47,34 +47,61 @@ if [ -n "$force_color_prompt" ]; then
     fi
 fi
 
-if [ -f /usr/share/git-core/git-prompt.sh ]; then
-    . /usr/share/git-core/git-prompt.sh
-elif [ -f /usr/lib/git-core/git-sh-prompt ]; then
-    . /usr/lib/git-core/git-sh-prompt
-elif [ -f /usr/share/git/git-prompt.sh ]; then
-    . /usr/share/git/git-prompt.sh
-fi
-if ! type __git_ps1 >/dev/null 2>&1; then
-    __git_ps1() {
-        local b
-        b="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)" || return 0
-        [ -n "$b" ] || return 0
-        printf "${1:- (%s)}" "$b"
-    }
-fi
-GIT_PS1_SHOWDIRTYSTATE=1
-GIT_PS1_SHOWSTASHSTATE=1
-GIT_PS1_SHOWUNTRACKEDFILES=1
-GIT_PS1_SHOWUPSTREAM=auto
+# "(name)" from DIND_ENVIRONMENT_NAME, nothing when it is unset or empty.
+# `sudo -i` and `su -` give root a clean environment: the entrypoint keeps a
+# copy of the name in /etc/dind-environment-name for those shells.
+__dind_env_name() {
+    local name="${DIND_ENVIRONMENT_NAME:-}"
+    if [ -z "$name" ] && [ -r /etc/dind-environment-name ]; then
+        read -r name </etc/dind-environment-name 2>/dev/null || true
+    fi
+    [ -n "$name" ] && printf '(%s)' "$name"
+    return 0
+}
 
+# "(branch)" of the git repository around $PWD, or "(abc1234)" on a detached
+# HEAD. It reads .git/HEAD instead of running git: the prompt shows up in
+# repositories owned by someone else (root inside alpine's checkout, where git
+# refuses with "dubious ownership"), and it must never run a repository's own
+# configuration (core.fsmonitor) as root.
+__dind_git_branch() {
+    local dir="$PWD" git head ref
+    while :; do
+        if [ -e "$dir/.git" ]; then
+            git="$dir/.git"
+            break
+        fi
+        [ -n "$dir" ] || return 0
+        dir="${dir%/*}"
+    done
+    # A worktree or submodule has a .git file pointing at the real directory.
+    if [ -f "$git" ]; then
+        read -r head <"$git" 2>/dev/null || return 0
+        git="${head#gitdir: }"
+        case "$git" in /*) ;; *) git="$dir/$git" ;; esac
+    fi
+    read -r head <"$git/HEAD" 2>/dev/null || return 0
+    case "$head" in
+        "ref: refs/heads/"*) ref="${head#ref: refs/heads/}" ;;
+        "ref: "*) ref="${head#ref: }" ;;
+        *) ref="${head:0:7}" ;;
+    esac
+    [ -n "$ref" ] && printf '(%s)' "$ref"
+    return 0
+}
+
+# user@host in green (red for root), (DIND_ENVIRONMENT_NAME) in yellow,
+# (git branch) in cyan, then the directory in blue.
 if [ "$color_prompt" = yes ]; then
     if [ "$(id -u)" -eq 0 ]; then
-        PS1='${debian_chroot:+($debian_chroot)}\[\033[01;31m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\[\033[01;33m\]$(__git_ps1 " (%s)")\[\033[00m\]\$ '
+        __dind_user_color='\[\033[01;31m\]'
     else
-        PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\[\033[01;33m\]$(__git_ps1 " (%s)")\[\033[00m\]\$ '
+        __dind_user_color='\[\033[01;32m\]'
     fi
+    PS1='${debian_chroot:+($debian_chroot)}'"$__dind_user_color"'\u@\h\[\033[00m\]\[\033[01;33m\]$(__dind_env_name)\[\033[00m\]\[\033[01;36m\]$(__dind_git_branch)\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+    unset __dind_user_color
 else
-    PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w$(__git_ps1 " (%s)")\$ '
+    PS1='${debian_chroot:+($debian_chroot)}\u@\h$(__dind_env_name)$(__dind_git_branch):\w\$ '
 fi
 unset color_prompt force_color_prompt
 

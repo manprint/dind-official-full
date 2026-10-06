@@ -49,6 +49,16 @@ prepare_home() {
 		/home/alpine/.bash_profile 2>/dev/null || true
 }
 
+# `sudo -i` and `su -` hand root a clean environment, without
+# DIND_ENVIRONMENT_NAME: the prompt falls back to this file.
+write_env_name() {
+	if [ -n "${DIND_ENVIRONMENT_NAME:-}" ]; then
+		printf '%s\n' "$DIND_ENVIRONMENT_NAME" | as_root tee /etc/dind-environment-name >/dev/null 2>&1 || true
+	else
+		as_root rm -f /etc/dind-environment-name 2>/dev/null || true
+	fi
+}
+
 # pidof, not pgrep -x, for every process-name check: busybox pgrep matches
 # argv[0], and dockerd starts containerd as /usr/local/bin/containerd, which
 # `pgrep -x containerd` never finds. pidof also compares comm and basenames.
@@ -239,6 +249,29 @@ is_ip() {
 	esac
 }
 
+# DOCKER_DAEMON_INTERNAL_BIP is a CIDR (a.b.c.d/n, IPv4, n 8-29) for the inner
+# docker0 bridge. Prints the value for --bip and fails on anything dockerd
+# would refuse, so a typo cannot keep the daemon down. A network address
+# (10.10.100.0/24, the usual way to write a subnet) is not a valid bridge IP:
+# it becomes the first host, 10.10.100.1/24. Any other host address is kept.
+normalize_bip() {
+	printf '%s\n' "$1" | awk -F'[./]' '
+		NF != 5 { exit 1 }
+		{
+			for (i = 1; i <= 5; i++) if ($i !~ /^(0|[1-9][0-9]*)$/) exit 1
+			for (i = 1; i <= 4; i++) if ($i + 0 > 255) exit 1
+			p = $5 + 0
+			if (p < 8 || p > 29) exit 1
+			ip = (($1 * 256 + $2) * 256 + $3) * 256 + $4
+			size = 2 ^ (32 - p)
+			host = ip % size
+			if (host == size - 1) exit 1
+			# Host bits are all zero and at least 3 of them sit in the last octet.
+			last = $4 + (host == 0 ? 1 : 0)
+			printf "%d.%d.%d.%d/%d\n", $1, $2, $3, last, p
+		}'
+}
+
 # Runs as root, in place of dockerd-entrypoint.sh: $1 is a log file (empty:
 # the container output), the rest are the dockerd arguments. It takes an
 # exclusive flock on the data-root and hands the descriptor down to dockerd,
@@ -279,6 +312,7 @@ if [ "${1:-}" = "__dind_env_dockerd" ]; then
 fi
 
 prepare_home
+write_env_name
 cleanup_stale_runtime_state
 
 if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ] || [ "$1" = "dockerd" ]; then
@@ -297,6 +331,24 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ] || [ "$1" = "dockerd" ]; then
 		fi
 	done
 	set +f
+	# DOCKER_DAEMON_INTERNAL_BIP="10.10.100.0/24": subnet of the inner default
+	# bridge (docker0), so the inner containers start on it. An explicit --bip
+	# in the arguments wins: dockerd refuses the option given twice.
+	if [ -n "${DOCKER_DAEMON_INTERNAL_BIP:-}" ]; then
+		case " $* " in
+		*" --bip "* | *" --bip="*)
+			echo "[dind-entrypoint] WARNING: --bip given as an argument, DOCKER_DAEMON_INTERNAL_BIP ignored" >&2
+			;;
+		*)
+			if bip="$(normalize_bip "$DOCKER_DAEMON_INTERNAL_BIP")"; then
+				echo "[dind-entrypoint] inner bridge docker0 on $bip (DOCKER_DAEMON_INTERNAL_BIP=$DOCKER_DAEMON_INTERNAL_BIP)"
+				set -- "$@" "--bip=$bip"
+			else
+				echo "[dind-entrypoint] WARNING: DOCKER_DAEMON_INTERNAL_BIP '$DOCKER_DAEMON_INTERNAL_BIP' is not an IPv4 CIDR (a.b.c.d/8-29), ignored" >&2
+			fi
+			;;
+		esac
+	fi
 fi
 
 if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then

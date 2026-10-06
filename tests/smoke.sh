@@ -5,8 +5,9 @@
 #
 #   tests/smoke.sh IMAGE [CYCLES]
 #
-# Covers startup, HOME under sudo, DIND_DNS, dotfile backup, the data-root
-# lock, graceful stop, CYCLES hard kills, a double SIGTERM and a dockerd crash.
+# Covers startup, HOME under sudo, the shell prompt, DIND_DNS,
+# DOCKER_DAEMON_INTERNAL_BIP, dotfile backup, the data-root lock, graceful stop,
+# CYCLES hard kills, a double SIGTERM and a dockerd crash.
 # Needs a Docker host that allows --privileged; no registry access, the inner
 # workload image is built from the dind container's own busybox. Everything it
 # creates is named dind-smoke-<pid>-* and removed on exit.
@@ -111,6 +112,8 @@ docker run --rm --entrypoint sh -v "$HOMEV:/home/alpine" "$IMAGE" \
 
 docker create --name "$MAIN" --privileged --stop-timeout 60 \
 	-e DIND_DNS="192.0.2.53, not-an-ip,198.51.100.53" \
+	-e DOCKER_DAEMON_INTERNAL_BIP=10.10.100.0/24 \
+	-e DIND_ENVIRONMENT_NAME=smokeenv \
 	-v "$DATA:/var/lib/docker" -v "$HOMEV:/home/alpine" \
 	"$IMAGE" >/dev/null
 docker start "$MAIN" >/dev/null
@@ -139,6 +142,31 @@ out="$(in_main sudo -i true 2>&1)" || fail "sudo -i failed: $out"
 [ -z "$out" ] || fail "sudo -i login shell prints: $out"
 ok "HOME follows the user (alpine, sudo, sudo -i, exec -u root)"
 
+# Prompt: user@host in green/red, (DIND_ENVIRONMENT_NAME) yellow, (branch) cyan.
+prompt() {
+	docker exec -u "$1" -e TERM=xterm-256color "$MAIN" \
+		bash -ic 'git init -q -b main /tmp/prompt-repo && cd /tmp/prompt-repo && printf "%s" "${PS1@P}"' 2>/dev/null |
+		sed 's/[\x01\x02]//g'
+}
+for u in alpine:32 root:31; do
+	p="$(prompt "${u%%:*}")"
+	case "$p" in
+	*$'\033[01;'"${u##*:}m${u%%:*}@"*$'\033[01;33m(smokeenv)'*$'\033[01;36m(main)'*) ;;
+	*) fail "prompt for ${u%%:*} lacks colours, (smokeenv) or (main): $(printf '%s' "$p" | cat -v)" ;;
+	esac
+done
+# sudo -i and su - drop the environment: the name comes from the file then.
+p="$(docker exec -u root -e TERM=xterm-256color "$MAIN" env -u DIND_ENVIRONMENT_NAME \
+	bash -ic 'printf "%s" "${PS1@P}"' 2>/dev/null)"
+case "$p" in
+*'(smokeenv)'*) ;;
+*) fail "root prompt without DIND_ENVIRONMENT_NAME lost (smokeenv): $(printf '%s' "$p" | cat -v)" ;;
+esac
+[ "$(in_main sudo -i bash -c 'echo "$0 $(getent passwd root | cut -d: -f7)"')" = "-bash /bin/bash" ] ||
+	fail "root login shell is not bash"
+in_main sh -c 'rm -rf /tmp/prompt-repo; sudo rm -rf /tmp/prompt-repo'
+ok "prompt: user@host green/red, (DIND_ENVIRONMENT_NAME) yellow, (branch) cyan, for alpine and root"
+
 in_main sh -c 'cd / && tar -c bin/busybox lib/ld-musl-*.so.1 | docker import - smoke/box' >/dev/null
 in_main docker run -d --name box --restart unless-stopped smoke/box /bin/busybox sleep 1000000 >/dev/null
 wait_workload
@@ -148,6 +176,16 @@ case "$resolv" in
 *) fail "DIND_DNS not applied to inner containers: $resolv" ;;
 esac
 ok "inner workload runs, DIND_DNS applied"
+
+# A network address is turned into the first host for docker0.
+bridge="$(in_main docker network inspect bridge -f '{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).Gateway}}')"
+[ "$bridge" = "10.10.100.0/24 10.10.100.1" ] || fail "DOCKER_DAEMON_INTERNAL_BIP not applied to docker0: $bridge"
+inner_ip="$(in_main docker run --rm smoke/box /bin/busybox ip -4 -o addr show eth0)"
+case "$inner_ip" in
+*" 10.10.100."*) ;;
+*) fail "inner container not on DOCKER_DAEMON_INTERNAL_BIP subnet: $inner_ip" ;;
+esac
+ok "DOCKER_DAEMON_INTERNAL_BIP: docker0 on 10.10.100.1/24, inner containers on that subnet"
 
 if [ "$FULL" = true ]; then
 	path="$(in_main bash -lc 'echo "$PATH"')"

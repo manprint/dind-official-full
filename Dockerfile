@@ -113,6 +113,9 @@ RUN set -eux; \
 	rclone version; \
 	addgroup -g 1000 alpine; \
 	adduser -D -u 1000 -G alpine -h /home/alpine -s /bin/bash alpine; \
+	# root's login shell is bash too: `sudo su`, `sudo -i` and `su -` read ~/.bashrc, like `exec -u root bash`.
+	sed -i 's#^\(root:.*\):/bin/[a-z]*sh$#\1:/bin/bash#' /etc/passwd; \
+	grep -q '^root:.*:/bin/bash$' /etc/passwd; \
 	if ! getent group docker >/dev/null; then addgroup -S docker; fi; \
 	addgroup alpine docker; \
 	if getent group fuse >/dev/null; then addgroup alpine fuse; fi; \

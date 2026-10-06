@@ -38,11 +38,6 @@ services:
       - "c 10:200 rwm"
       - "c 10:236 rwm"
       - "c 10:237 rwm"
-    # Daemon path only: with a TTY the entrypoint would drop into an
-    # interactive login shell instead of supervising incus. `compose run`
-    # allocates its own TTY, so the interactive path still works.
-    stdin_open: false
-    tty: false
     working_dir: /home/alpine
     environment:
       TZ: Europe/Rome

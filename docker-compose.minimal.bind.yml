@@ -10,12 +10,6 @@ services:
     # their own: the host daemon restarts the container at boot and after
     # a crash. Unlike on-failure, it does not depend on the exit code.
     restart: unless-stopped
-    # Daemon path only: with a TTY the entrypoint would drop into an
-    # interactive login shell instead of supervise(), and a foreground shell
-    # blocks POSIX sh trap delivery, so `docker stop` could not be graceful.
-    # `compose run` allocates its own TTY, so the interactive path still works.
-    stdin_open: false
-    tty: false
     working_dir: /home/alpine
     # Default log rotation for the inner containers. Drop it when mounting
     # an /etc/docker/daemon.json with log-opts: dockerd refuses a setting

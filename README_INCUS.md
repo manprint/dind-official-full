@@ -43,7 +43,6 @@ Non è `privileged: true`: bastano questi permessi, tutti già nel compose.
 | `devices: /dev/net/tun` + regola `c 10:200` | istanze con VPN (TUN). |
 | `device_cgroup_rules: c 10:236, c 10:237` | device-mapper e loop-control per LVM. |
 | `restart: unless-stopped`, `stop_grace_period: 120s` | ripartenza dopo crash/reboot dell'host; il tempo per fermare le istanze una a una. |
-| `stdin_open: false`, `tty: false` | percorso daemon (come le altre varianti). `compose run` alloca una TTY propria: shell interattiva. |
 
 Anche `privileged: true` funziona, ma non serve.
 

@@ -84,7 +84,7 @@ case "$INSTANCE_SWAP" in
 		T | TiB) mul=1099511627776 ;;
 		TB) mul=1000000000000 ;;
 		esac
-		swap_bytes=$((n * mul))
+		swap_bytes=$((10#$n * mul))
 	else
 		die "INSTANCE_SWAP '$INSTANCE_SWAP' is not a size (e.g. 512MiB, 1GiB, 0)"
 	fi
@@ -151,7 +151,10 @@ say() { echo "[guest] $*"; }
 is_true() { [ "$1" = true ] || [ "$1" = yes ] || [ "$1" = 1 ]; }
 
 say "packages"
-pkgs="sudo openssh-server openssh-clients tzdata glibc-langpack-it kbd passwd shadow-utils which procps-ng findutils
+# The language pack of LOCALE (it_IT.UTF-8: glibc-langpack-it); C.UTF-8 is built in.
+langpack=""
+case "$LOCALE" in *_*) langpack="glibc-langpack-${LOCALE%%_*}" ;; esac
+pkgs="sudo openssh-server openssh-clients tzdata $langpack kbd passwd shadow-utils which procps-ng findutils
 	curl wget ca-certificates openssl git vim-enhanced nano rsync unzip jq htop lsof fuse3 bash-completion $EXTRA_PACKAGES"
 if is_true "$INSTALL_NET_TOOLS"; then
 	pkgs="$pkgs iproute iputils traceroute mtr tcpdump nmap nmap-ncat socat iperf3 bind-utils ethtool net-tools conntrack-tools iptables-nft nftables"
@@ -235,6 +238,7 @@ if is_true "$INSTALL_RCLONE"; then
 	version="$RCLONE_RELEASE"
 	if [ "$version" = current ]; then
 		version="$(wget -qO- https://downloads.rclone.org/version.txt | awk '{print $2}')"
+		[ -n "$version" ] || { echo "cannot read the current rclone version from downloads.rclone.org" >&2; exit 1; }
 	fi
 	dir="rclone-$version-linux-$arch"
 	cd /tmp
@@ -297,6 +301,6 @@ incus exec "$REF" \
 	-- /root/provision.sh
 incus exec "$REF" -- rm -f /root/provision.sh
 
-ip4="$(incus list "$REF" -c 4 -f csv | tr ',' '\n' | tr -d '"' | awk '/\(eth0\)/ {print $1}')"
+ip4="$(incus list "${INCUS_REMOTE:+$INCUS_REMOTE:}^$INSTANCE_NAME\$" -c 4 -f csv | tr ',' '\n' | tr -d '"' | awk '/\(eth0\)/ {print $1}')"
 log "ready: $REF  ip=${ip4:-?}  user=$USER_NAME  password=$USER_PASSWORD"
 log "ssh ${USER_NAME}@${ip4:-<ip>}${INSTANCE_SSH_PUBLISH_PORT:+   (or port $INSTANCE_SSH_PUBLISH_PORT of the incus host)}"

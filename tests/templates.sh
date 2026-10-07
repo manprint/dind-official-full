@@ -24,12 +24,14 @@
 # access: instance images, distro packages, Docker's repository, rclone. That is why
 # it is not part of the release pipeline, whose smoke test needs no registry.
 # SCRIPTS_DIR=scripts tests/templates.sh IMAGE tests the working tree instead of
-# the scripts baked into the image. Everything is named incus-tpl-<pid>-*.
+# the scripts baked into the image. TPL_ENV="DOCKER_SOURCE=distro" adds settings
+# to every template run (space separated KEY=VALUE). Everything is named incus-tpl-<pid>-*.
 set -euo pipefail
 
 IMAGE="${1:?usage: $0 IMAGE [TEMPLATE...]}"
 shift || true
 TEMPLATES=("$@")
+read -ra TPL_ENV <<<"${TPL_ENV:-}"
 [ "${#TEMPLATES[@]}" -gt 0 ] || TEMPLATES=(alpine debian13 ubuntu2404 ubuntu2604 fedora)
 MAIN="incus-tpl-$$-main"
 BASE="$(mktemp -d)"
@@ -305,10 +307,11 @@ verify() {
 	ok "INSTANCE_SWAP=lots refused, nothing launched"
 
 	start=$(date +%s)
-	in_main env INSTANCE_NAME="$NAME" INSTANCE_SWAP=1GiB "/opt/incus-template/create_incus_$TPL.sh" >"$BASE/$TPL.log" 2>&1 ||
+	in_main env INSTANCE_NAME="$NAME" INSTANCE_SWAP=1GiB "${TPL_ENV[@]}" "/opt/incus-template/create_incus_$TPL.sh" >"$BASE/$TPL.log" 2>&1 ||
 		{ tail -30 "$BASE/$TPL.log" >&2; fail "template failed"; }
-	ok "created and provisioned in $(($(date +%s) - start))s"
+	ok "created and provisioned in $(($(date +%s) - start))s${TPL_ENV[*]:+ (${TPL_ENV[*]})}"
 	refresh_ip
+	grep -qF "ready: $NAME  ip=$IP  user=$USER_T " "$BASE/$TPL.log" || fail "the closing line does not name the address $IP"
 
 	# user and home
 	[ "$(g "id -u $USER_T")" = 1000 ] || fail "uid of $USER_T"

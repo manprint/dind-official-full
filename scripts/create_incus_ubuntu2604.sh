@@ -84,7 +84,7 @@ case "$INSTANCE_SWAP" in
 		T | TiB) mul=1099511627776 ;;
 		TB) mul=1000000000000 ;;
 		esac
-		swap_bytes=$((n * mul))
+		swap_bytes=$((10#$n * mul))
 	else
 		die "INSTANCE_SWAP '$INSTANCE_SWAP' is not a size (e.g. 512MiB, 1GiB, 0)"
 	fi
@@ -257,6 +257,7 @@ if is_true "$INSTALL_RCLONE"; then
 	version="$RCLONE_RELEASE"
 	if [ "$version" = current ]; then
 		version="$(wget -qO- https://downloads.rclone.org/version.txt | awk '{print $2}')"
+		[ -n "$version" ] || { echo "cannot read the current rclone version from downloads.rclone.org" >&2; exit 1; }
 	fi
 	dir="rclone-$version-linux-$arch"
 	cd /tmp
@@ -287,7 +288,7 @@ if is_true "$INSTALL_DOCKER"; then
 		fi
 	fi
 	if [ "$installed" != true ]; then
-		apt-get install -y -qq docker.io docker-compose
+		apt-get install -y -qq docker.io docker-compose-v2
 	fi
 	mkdir -p /etc/docker
 	cat >/etc/docker/daemon.json <<EOF
@@ -322,6 +323,6 @@ incus exec "$REF" \
 	-- /root/provision.sh
 incus exec "$REF" -- rm -f /root/provision.sh
 
-ip4="$(incus list "$REF" -c 4 -f csv | tr ',' '\n' | tr -d '"' | awk '/\(eth0\)/ {print $1}')"
+ip4="$(incus list "${INCUS_REMOTE:+$INCUS_REMOTE:}^$INSTANCE_NAME\$" -c 4 -f csv | tr ',' '\n' | tr -d '"' | awk '/\(eth0\)/ {print $1}')"
 log "ready: $REF  ip=${ip4:-?}  user=$USER_NAME  password=$USER_PASSWORD"
 log "ssh ${USER_NAME}@${ip4:-<ip>}${INSTANCE_SSH_PUBLISH_PORT:+   (or port $INSTANCE_SSH_PUBLISH_PORT of the incus host)}"

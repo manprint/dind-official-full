@@ -8,7 +8,8 @@ Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container 
 - Preseed al primo avvio: pool di storage `default`, bridge `incusbr0`, profilo `default`.
 - Stessa base della variante minimal: utente `alpine` + sudo, rclone, fuse, dotfile con prompt `alpine@host(env)(branch)`, `DIND_ENVIRONMENT_NAME`.
 - Nessun Docker dentro l'immagine (Docker si installa *dentro* le istanze, vedi sotto).
-- **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 44) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: vedi la sezione dedicata.
+- **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 44) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: script bash e, in `terraform/`, lo stesso come template OpenTofu/Terraform. Vedi la sezione dedicata.
+- **OpenTofu 1.13.1** (`tofu`, con il completamento bash) e il provider `lxc/incus` 1.2.0 già installato: `tofu init` funziona offline.
 
 ## Avvio
 
@@ -117,6 +118,8 @@ resource "incus_instance" "web" {
   }
 }
 ```
+
+- **OpenTofu dentro il container**: `tofu` (OpenTofu 1.13.1) è nell'immagine. Il provider `lxc/incus` 1.2.0 sta nel mirror locale implicito `/usr/share/terraform/plugins`, quindi `tofu init` lo collega senza scaricare nulla (provato con `--network none`). Lì il provider usa la configurazione del client `incus` e il socket locale, come gli script, senza token né certificati. Per istanze già configurate c'è il template `/opt/incus-template/terraform` (v. *Template per creare istanze*).
 
 ## Come lanciare i container, e con quali capability
 
@@ -237,6 +240,22 @@ INSTANCE_RECREATE=true INSTALL_DOCKER=false INSTANCE_SSH_PUBLISH_PORT=2222 /opt/
 
 Una password debole come `password` va cambiata (o `SSH_PASSWORD_AUTH=no` con chiavi) prima di esporre l'istanza.
 
+### Lo stesso con OpenTofu: `/opt/incus-template/terraform`
+
+Il template OpenTofu/Terraform crea la stessa istanza con lo stesso provisioning: `guest/<distro>.sh` è lo script di `create_incus_<distro>.sh` byte per byte (`tests/terraform.sh` lo controlla, insieme ai default). Le impostazioni sono le variabili degli script in minuscolo (`distro` sceglie il template) e si danno come `TF_VAR_*`, in `terraform.tfvars` o con `-var`. Guida completa: [scripts/terraform/README.md](scripts/terraform/README.md), anche nell'immagine.
+
+```bash
+cp -r /opt/incus-template/terraform ~/web && cd ~/web    # lo stato va sotto la home, non in /opt
+tofu init
+TF_VAR_distro=alpine TF_VAR_instance_name=web TF_VAR_instance_memory=4GiB tofu apply
+tofu output                                               # name, ipv4, ipv6, user, ssh
+```
+
+Rispetto agli script:
+- rilanciare `tofu apply` senza cambiare nulla non fa nulla (lo script invece rifiuta un'istanza che esiste già). Le impostazioni dell'istanza (limiti, swap, device) cambiano **sul posto**, quelle del guest (utente, lingua, pacchetti…) **ricreano** l'istanza, e il piano lo dice;
+- un provisioning fallito lascia l'istanza *tainted* con l'output dello script nell'errore;
+- `tofu destroy` la cancella.
+
 ### Variabili (le stesse nei cinque script salvo dove indicato)
 
 Tutte con un default in testata, sovrascrivibili dall'ambiente.
@@ -283,7 +302,7 @@ OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non pu
 
 ### Verifica eseguita
 
-`tests/templates.sh IMAGE [alpine|debian13|ubuntu2404|ubuntu2604|fedora ...]` (`just templates-incus TAG [template...]`) avvia l'immagine su bind mount nuovi, lancia ogni script con i suoi default (più `INSTANCE_SWAP=1GiB`), verifica, riavvia l'istanza e ripete i controlli. Serve internet (immagini delle istanze, pacchetti, repository Docker, rclone), quindi **non** fa parte della pipeline di release, il cui smoke test non usa registry. `SCRIPTS_DIR=scripts` prova gli script del working tree invece di quelli nell'immagine; `TPL_ENV="DOCKER_SOURCE=distro"` aggiunge impostazioni a ogni esecuzione degli script.
+`tests/templates.sh IMAGE [alpine|debian13|ubuntu2404|ubuntu2604|fedora ...]` (`just templates-incus TAG [template...]`) avvia l'immagine su bind mount nuovi, lancia ogni script con i suoi default (più `INSTANCE_SWAP=1GiB`), verifica, riavvia l'istanza e ripete i controlli. Serve internet (immagini delle istanze, pacchetti, repository Docker, rclone), quindi **non** fa parte della pipeline di release, il cui smoke test non usa registry. `SCRIPTS_DIR=scripts` prova gli script del working tree (compreso `terraform/`) invece di quelli nell'immagine; `TPL_ENV="DOCKER_SOURCE=distro"` aggiunge impostazioni a ogni esecuzione degli script. `MODE=tofu` (`just templates-incus-tofu`) crea le istanze con il template OpenTofu invece che con gli script (impostazioni come `TF_VAR_*`) e ripete tutti i controlli.
 
 | Verifica (tutte OK su ciascun template) | Alpine 3.24 | Debian 13 | Ubuntu 24.04 | Ubuntu 26.04 | Fedora 44 |
 |---|---|---|---|---|---|
@@ -302,6 +321,8 @@ OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non pu
 | stessi controlli dopo il riavvio dell'istanza | ✓ | ✓ | ✓ | ✓ | ✓ |
 | seconda esecuzione senza `INSTANCE_RECREATE`: errore | ✓ | ✓ | ✓ | ✓ | ✓ |
 | tutta la tabella con `DOCKER_SOURCE=distro` (pacchetti Docker della distribuzione) | — | ✓ | ✓ | ✓ | — |
+| tutta la tabella con il **template OpenTofu** (`MODE=tofu`): creazione e provisioning | 19 s | 29 s | 43 s | 40 s | 56 s |
+| OpenTofu: output (`ipv4`, `user`, `ssh`, `user_password`), piano vuoto dopo provisioning e riavvio, `limits.memory` a 3 GiB **sul posto** (istanza non ricreata), cambio di `locale` pianificato come **sostituzione**, secondo stato con lo stesso nome rifiutato senza toccare l'istanza, `destroy` | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Non ripetuti per ogni script (stesso codice): `INSTANCE_IPV4`, `INSTANCE_SSH_PUBLISH_PORT`, utente/uid/password/timezone diversi, `EXTRA_PACKAGES`, `USER_SUDO_NOPASSWD`, `INSTALL_*=false`, memoria/CPU vuote, `INSTANCE_SWAP=0` e `off`. La conversione di `INSTANCE_SWAP` (`1GiB`, `512MiB`, `0`) è provata a mano su Alpine. `DOCKER_SOURCE=distro` non riguarda Alpine (usa sempre i suoi pacchetti) e su Fedora installa `moby-engine` + `docker-compose`, che contiene il plugin `docker compose` (verificato sul pacchetto, non con il test completo).
 
@@ -415,6 +436,11 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 45 | `INCUS_ENV_SHUTDOWN_TIMEOUT` = `090`, `000`, `0`, `abc`, vuota | `090` → 90 s; gli altri → 100 s con un warning (prima `090`, letto come ottale, era un errore fatale a metà dello stop) |
 | 46 | `tests/smoke.incus.sh` con tutti i controlli nuovi | OK, 26/26 |
 | 47 | `tests/templates.sh` su tutti e cinque i template con gli script corretti, poi `TPL_ENV=DOCKER_SOURCE=distro` su Debian 13, Ubuntu 24.04 e 26.04 | OK: 80/80 e 48/48 |
+| 48 | `tests/terraform.sh` (anche nella pipeline). Controlla che `guest/*.sh` sia identico agli heredoc degli script, che ogni impostazione degli script abbia una variabile con lo stesso default, la tabella delle distro e l'ambiente del provisioning. Poi `fmt`, `validate` e i 53 test unitari (provider simulato), su una copia configurata con `terraform.tfvars`, `*.auto.tfvars` e `TF_VAR_*` lontani dai default. Mutazioni introdotte apposta (default cambiato, heredoc modificato, unità dello swap, `tests/terraform.tfvars` svuotato) | OK, tutte le mutazioni rilevate |
+| 49 | `tests/smoke.incus.sh` con OpenTofu: `init` dal mirror dell'immagine; i 53 test nell'immagine; rifiuto in `/opt/incus-template`; istanza da `terraform.tfvars` + `TF_VAR_*` (limiti, swap, `eth0` del profilo con IP fisso) e piano vuoto; memoria cambiata sul posto e swap dal riavvio dell'istanza; provisioning fallito (errore con l'output dello script, istanza *tainted*); secondo stato sullo stesso nome rifiutato; stato ancora coerente dopo stop, kill e crash del container; `destroy` | OK, 34/34 in ~90 s |
+| 50 | `MODE=tofu tests/templates.sh` sui cinque template (v. *Verifica eseguita*) | OK, 105/105 in 466 s |
+| 51 | `tofu init` con `--network none` (provider dal mirror, 53 test); una versione del provider che il mirror non ha → *no available releases match*; con `~/.tofurc` `direct {}` viene scaricata dal registry, firmata | OK |
+| 52 | HashiCorp Terraform 1.16.5 sul template (`TOFU=terraform tests/terraform.sh`): `init` da `registry.terraform.io` (stessa chiave di firma), `validate`, `fmt`, 53 test anche sulla copia configurata | OK |
 
 ### Bug trovati dai test (e corretti)
 
@@ -446,6 +472,7 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 - arm64, `privileged: true` come variante di compose, `linux.kernel_modules`, VM, ZFS, pool Ceph.
 - `tests/templates.sh` non è nella pipeline di release (serve internet, immagini delle istanze, Docker Hub): si lancia a mano. Lo smoke test (`tests/smoke.incus.sh`) invece sì, su ogni digest prima dei tag.
 - Template su arm64 (le immagini jrei in lista sono quasi tutte solo amd64).
+- Template OpenTofu: solo con lo stato locale nella copia (niente backend remoti né workspace) e senza `tofu import` di istanze create dagli script. HashiCorp Terraform è provato con `init`, `validate` e i test unitari, non contro un Incus vero.
 
 ## Limiti invalicabili
 
@@ -462,3 +489,5 @@ Cose che il container non può risolvere da solo: si gestiscono fuori (host, VM,
 - **Requisiti dell'host**: cgroup v2, `/dev/fuse` (senza, le istanze vedono la memoria e le CPU dell'host), kernel e moduli dell'host (le istanze non ne hanno di propri: `sysctl` e moduli sono quelli dell'host).
 - **Capability**: un'istanza non ne ha mai più del container esterno (`cap_add: ALL` è il tetto).
 - **Sicurezza**: l'API (8443) e il proxy della UI (8080) equivalgono a root sull'host delle istanze; la basic auth del proxy passa in chiaro su HTTP.
+- **Template OpenTofu: la password dell'utente è in chiaro nello stato.** `user_password` arriva al provisioning come variabile d'ambiente del comando `exec` del provider. Quindi finisce in `terraform.tfstate` e in un piano salvato con `-out`; `sensitive` la nasconde solo nell'output di `plan`/`apply`. Tieni privata la copia del template, oppure cambia la password nell'istanza dopo la creazione.
+- **Template OpenTofu: l'output del provisioning si vede solo se fallisce.** Il provider non trasmette l'output di `exec` mentre gira: per minuti si vede solo *Still creating...*. Se il provisioning fallisce, l'errore riporta stdout e stderr dello script e l'istanza resta *tainted* per l'ispezione.

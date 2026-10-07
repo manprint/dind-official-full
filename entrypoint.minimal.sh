@@ -237,16 +237,45 @@ supervise() {
 
 # dockerd refuses to start on a --dns value that is not an IP address, so
 # DIND_DNS entries are checked first: a typo must not keep the daemon down.
+# The rules are dockerd's: dotted quads without leading zeros; IPv6 groups of
+# 1-4 hex digits, at most one "::" (standing for at least one group), an
+# optional dotted-quad tail counting as two groups. A charset check alone let
+# 2001:db8::1::2 through, and dockerd then refused to start. Zones (fe80::1%eth0)
+# are refused too, although dockerd takes them: they name an interface of the
+# daemon's namespace, not of the containers that would use the resolver.
 is_ip() {
-	case "$1" in
-	*:*)
-		case "$1" in *[!0-9A-Fa-f:.]*) return 1 ;; esac
-		;;
-	*)
-		printf '%s\n' "$1" | awk -F. 'NF != 4 { exit 1 }
-			{ for (i = 1; i <= 4; i++) if ($i !~ /^(0|[1-9][0-9]*)$/ || $i + 0 > 255) exit 1 }'
-		;;
-	esac
+	printf '%s\n' "$1" | awk '
+		function quad(s,   n, a, i) {
+			n = split(s, a, ".")
+			if (n != 4) return 0
+			for (i = 1; i <= 4; i++) if (a[i] !~ /^(0|[1-9][0-9]*)$/ || a[i] + 0 > 255) return 0
+			return 1
+		}
+		{
+			s = $0
+			if (s !~ /:/) exit !quad(s)
+			if (s !~ /^[0-9A-Fa-f:.]+$/) exit 1
+			gap = index(s, "::")
+			if (gap) {
+				if (index(substr(s, gap + 1), "::")) exit 1
+				if (s ~ /^:[^:]/ || s ~ /[^:]:$/) exit 1
+			}
+			n = split(s, f, ":")
+			groups = 0
+			for (i = 1; i <= n; i++) {
+				if (f[i] == "") {
+					if (!gap) exit 1
+				} else if (i == n && f[i] ~ /\./) {
+					if (!quad(f[i])) exit 1
+					groups += 2
+				} else if (f[i] ~ /^[0-9A-Fa-f][0-9A-Fa-f]?[0-9A-Fa-f]?[0-9A-Fa-f]?$/) {
+					groups++
+				} else {
+					exit 1
+				}
+			}
+			exit !(gap ? groups <= 7 : groups == 8)
+		}'
 }
 
 # DOCKER_DAEMON_INTERNAL_BIP is a CIDR (a.b.c.d/n, IPv4, n 8-29) for the inner
@@ -270,6 +299,23 @@ normalize_bip() {
 			last = $4 + (host == 0 ? 1 : 0)
 			printf "%d.%d.%d.%d/%d\n", $1, $2, $3, last, p
 		}'
+}
+
+# Root side. dockerd-entrypoint.sh signs new certificates at every start but
+# generates each private key only once, under set -e, and only checks that the
+# file is not empty: a key cut short by a full disk or a power loss during the
+# first start made every later start fail at openssl, a restart loop no
+# restart policy gets out of. Such a key is set aside to be generated again.
+# The certificates follow at the same start; /certs/client is not published,
+# so no client outside the container holds the old ones.
+check_tls_keys() {
+	[ -n "${DOCKER_TLS_CERTDIR:-}" ] || return 0
+	for key in "$DOCKER_TLS_CERTDIR/ca/key.pem" "$DOCKER_TLS_CERTDIR/server/key.pem" "$DOCKER_TLS_CERTDIR/client/key.pem"; do
+		[ -s "$key" ] || continue
+		openssl pkey -in "$key" -noout -passin pass: </dev/null >/dev/null 2>&1 && continue
+		echo "[dind-entrypoint] WARNING: $key is not a valid private key, setting it aside to generate a new one" >&2
+		mv -f "$key" "$key.dind-env-corrupt.$(date +%Y%m%d%H%M%S)" 2>/dev/null || rm -f "$key"
+	done
 }
 
 # Runs as root, in place of dockerd-entrypoint.sh: $1 is a log file (empty:
@@ -302,6 +348,7 @@ exec_dockerd_locked() {
 	if [ -n "$log" ] && (: >>"$log") 2>/dev/null; then
 		exec >>"$log" 2>&1
 	fi
+	check_tls_keys
 	exec dockerd-entrypoint.sh "$@"
 }
 

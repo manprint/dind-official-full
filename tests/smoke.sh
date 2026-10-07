@@ -5,12 +5,15 @@
 #
 #   tests/smoke.sh IMAGE [CYCLES]
 #
-# Covers startup, HOME under sudo, the shell prompt, DIND_DNS,
+# Covers startup, HOME under sudo, the shell prompt, DIND_DNS (IPv4 and IPv6),
 # DOCKER_DAEMON_INTERNAL_BIP, dotfile backup, the data-root lock, graceful stop,
-# CYCLES hard kills, a double SIGTERM and a dockerd crash.
-# Needs a Docker host that allows --privileged; no registry access, the inner
-# workload image is built from the dind container's own busybox. Everything it
-# creates is named dind-smoke-<pid>-* and removed on exit.
+# a corrupt TLS key, CYCLES hard kills, a double SIGTERM, a dockerd crash, a
+# crash of the whole container brought back by the restart policy, and the
+# container recreated on its volumes (compose down/up).
+# Needs a Docker host that allows --privileged (the crash is a SIGKILL sent to
+# the container's PID 1 from the host PID namespace); no registry access, the
+# inner workload image is built from the dind container's own busybox.
+# Everything it creates is named dind-smoke-<pid>-* and removed on exit.
 set -euo pipefail
 
 IMAGE="${1:?usage: $0 IMAGE [CYCLES]}"
@@ -21,10 +24,12 @@ SECOND="$ID-second"
 DATA="$ID-data"
 HOMEV="$ID-home"
 FULL=false
+TMPD="$(mktemp -d)"
 
 cleanup() {
 	docker rm -f "$MAIN" "$SECOND" >/dev/null 2>&1 || true
 	docker volume rm -f "$DATA" "$HOMEV" >/dev/null 2>&1 || true
+	rm -rf "$TMPD"
 }
 trap cleanup EXIT
 
@@ -110,12 +115,17 @@ docker volume create "$HOMEV" >/dev/null
 docker run --rm --entrypoint sh -v "$HOMEV:/home/alpine" "$IMAGE" \
 	-c 'echo "# my own bashrc" > /home/alpine/.bashrc'
 
-docker create --name "$MAIN" --privileged --stop-timeout 60 \
-	-e DIND_DNS="192.0.2.53, not-an-ip,198.51.100.53" \
-	-e DOCKER_DAEMON_INTERNAL_BIP=10.10.100.0/24 \
-	-e DIND_ENVIRONMENT_NAME=smokeenv \
-	-v "$DATA:/var/lib/docker" -v "$HOMEV:/home/alpine" \
-	"$IMAGE" >/dev/null
+# 2001:db8::1::2 passes a charset check but dockerd refuses it and does not
+# start: it must be dropped like the plain typo.
+create_main() {
+	docker create --name "$MAIN" --privileged --stop-timeout 60 \
+		-e DIND_DNS="192.0.2.53, not-an-ip,198.51.100.53 2001:db8::1::2,2001:db8::53" \
+		-e DOCKER_DAEMON_INTERNAL_BIP=10.10.100.0/24 \
+		-e DIND_ENVIRONMENT_NAME=smokeenv \
+		-v "$DATA:/var/lib/docker" -v "$HOMEV:/home/alpine" \
+		"$IMAGE" >/dev/null
+}
+create_main
 docker start "$MAIN" >/dev/null
 wait_ready
 if in_main sh -c 'command -v pm2' >/dev/null 2>&1; then
@@ -129,7 +139,15 @@ ok "tini runs as subreaper"
 
 [ "$(count "DIND_DNS entry 'not-an-ip' is not an IP address")" = 1 ] ||
 	fail "invalid DIND_DNS entry not reported"
-ok "invalid DIND_DNS entry dropped with a warning"
+[ "$(count "DIND_DNS entry '2001:db8::1::2' is not an IP address")" = 1 ] ||
+	fail "invalid IPv6 DIND_DNS entry not reported"
+args="$(in_main sh -c 'tr "\0" " " </proc/"$(cat /var/run/docker.pid)"/cmdline')"
+case "$args" in
+*--dns=2001:db8::1::2*) fail "invalid IPv6 DIND_DNS entry passed to dockerd: $args" ;;
+*--dns=192.0.2.53*--dns=198.51.100.53*--dns=2001:db8::53*) ;;
+*) fail "valid DIND_DNS entries not passed to dockerd: $args" ;;
+esac
+ok "invalid DIND_DNS entries (IPv4 and IPv6) dropped with a warning, valid ones passed on"
 
 in_main sh -c 'grep -q dind-env- ~/.bashrc && grep -q "my own bashrc" ~/.bashrc.dind-env-backup.*' ||
 	fail "unmarked .bashrc not moved aside"
@@ -234,6 +252,16 @@ ok "docker stop: one SIGTERM, clean shutdown, exit 0"
 boot
 ok "restart after docker stop: daemon and inner workload back"
 
+# A private key cut short (a full disk or a power loss during the first start)
+# made dockerd-entrypoint.sh fail at openssl on every start.
+docker stop -t 60 "$MAIN" >/dev/null
+printf 'not a key\n' >"$TMPD/key.pem"
+docker cp "$TMPD/key.pem" "$MAIN:/certs/server/key.pem"
+boot
+[ "$(count 'is not a valid private key')" = 1 ] || fail "corrupt TLS key not reported"
+in_main sudo sh -c 'ls /certs/server/key.pem.dind-env-corrupt.*' >/dev/null 2>&1 || fail "corrupt TLS key not set aside"
+ok "corrupt TLS key set aside and generated again, daemon back"
+
 for n in $(seq 1 "$CYCLES"); do
 	docker kill "$MAIN" >/dev/null
 	docker wait "$MAIN" >/dev/null
@@ -258,5 +286,34 @@ code="$(wait_exit)"
 ok "dockerd crash: container exits $code"
 boot
 ok "restart after a dockerd crash: daemon and inner workload back"
+
+# A crash of the whole container (OOM kill, a SIGKILL to PID 1): unlike
+# docker kill, which counts as a manual stop, the restart policy brings it back.
+docker update --restart unless-stopped "$MAIN" >/dev/null
+restarts="$(docker inspect -f '{{.RestartCount}}' "$MAIN")"
+pid="$(docker inspect -f '{{.State.Pid}}' "$MAIN")"
+docker run --rm --privileged --pid host -u 0 --entrypoint kill "$IMAGE" -KILL "$pid"
+back=false
+for _ in $(seq 1 60); do
+	if [ "$(docker inspect -f '{{.RestartCount}}' "$MAIN")" -gt "$restarts" ] &&
+		[ "$(docker inspect -f '{{.State.Running}}' "$MAIN")" = true ]; then
+		back=true
+		break
+	fi
+	sleep 1
+done
+[ "$back" = true ] || fail "restart policy did not bring the container back after its PID 1 was killed"
+wait_ready
+wait_pm2
+wait_workload
+docker update --restart no "$MAIN" >/dev/null
+ok "PID 1 SIGKILLed from the host: restart policy brings daemon and inner workload back"
+
+# compose down/up: a new container on the same volumes.
+docker stop -t 60 "$MAIN" >/dev/null
+docker rm "$MAIN" >/dev/null
+create_main
+boot
+ok "container recreated on its volumes: daemon and inner workload back"
 
 echo "all checks passed"

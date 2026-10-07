@@ -7,12 +7,16 @@
 #
 # Covers startup and preseed, the API and the web UI, an instance with limits
 # (memory, cpu) and its capabilities, a second container on the same data directory
-# (refused with 75, the first untouched), graceful stop, CYCLES hard kills
-# with stale runtime files planted in the data directory, a double SIGTERM and an
-# incusd crash. Needs a Docker host that allows --cap-add ALL with
-# systempaths=unconfined, cgroup v2 and /dev/fuse; no registry access, the
-# instance image is built from the container's own busybox. Everything it
-# creates is named incus-smoke-<pid>-* and removed on exit.
+# (refused with 75, the first untouched), graceful stop (the instance shut down in
+# order, also while an operation that cannot be cancelled runs and when the API
+# does not answer), CYCLES hard kills with stale runtime files planted in the data
+# directory, lxcfs and the web UI proxy dying, a server certificate cut short, an
+# incusd crash, a double SIGTERM and a crash of the whole container brought back
+# by the restart policy. Needs a Docker host that allows --cap-add ALL with
+# systempaths=unconfined, cgroup v2, /dev/fuse and --privileged (the crash is a
+# SIGKILL sent to the container's PID 1 from the host PID namespace); no
+# registry access, the instance image is built from the container's own
+# busybox. Everything it creates is named incus-smoke-<pid>-* and removed on exit.
 set -euo pipefail
 
 IMAGE="${1:?usage: $0 IMAGE [CYCLES]}"
@@ -83,6 +87,24 @@ wait_configured() {
 	fail "core.https_address was not configured"
 }
 
+# Written by the instance's init when it gets SIGPWR, the signal incus halts
+# it with, after a pause that the SIGKILL of a teardown would not leave:
+# present only when the instance was shut down in order. Removed at boot.
+marker() {
+	docker run --rm -u 0 --entrypoint sh -v "$DATA":/d "$IMAGE" \
+		-c "cat /d/storage-pools/default/containers/$1/rootfs/root/clean-shutdown 2>/dev/null" || true
+}
+
+# docker stop must leave exit 0, within the grace period, with smk shut down in order.
+stop_in_order() {
+	start=$(date +%s)
+	docker stop "$MAIN" >/dev/null
+	took=$(($(date +%s) - start))
+	[ "$(docker inspect -f '{{.State.ExitCode}}' "$MAIN")" = 0 ] || fail "$1: docker stop exit $(docker inspect -f '{{.State.ExitCode}}' "$MAIN")"
+	[ "$took" -lt 60 ] || fail "$1: docker stop took ${took}s"
+	[ -n "$(marker smk)" ] || fail "$1: instance smk was not shut down in order"
+}
+
 wait_instance() {
 	for _ in $(seq 1 60); do
 		if [ "$(in_main incus list smk -c s -f csv 2>/dev/null)" = RUNNING ]; then
@@ -140,6 +162,19 @@ in_main curl -s http://127.0.0.1:8080/1.0 | grep -q '"auth":"trusted"' || fail "
 [ "$(in_main sh -c 'incus config trust list --format csv | grep -c incus-ui')" = 1 ] || fail "incus-ui certificate not trusted exactly once"
 ok "web UI on 8080 without a browser certificate (proxy trusted as incus-ui)"
 
+[ "$(count 'could not open error log file')" = 0 ] || fail "nginx complains about its error log"
+ok "web UI proxy starts without alerts"
+
+# The instance's init, like systemd, does not stop on SIGTERM and halts on
+# SIGPWR (see marker). With /root/stubborn it ignores SIGPWR as well.
+docker exec -i "$MAIN" sh -c 'cat >/tmp/smoke-init' <<'INIT'
+#!/bin/sh
+rm -f /root/clean-shutdown
+trap '' TERM INT HUP
+trap 'if [ ! -e /root/stubborn ]; then sleep 1; date +%s >/root/clean-shutdown; exit 0; fi' PWR
+while :; do sleep 1; done
+INIT
+
 # A rootfs from the container's own busybox: no registry needed.
 in_main sh -c '
 	set -e
@@ -147,10 +182,9 @@ in_main sh -c '
 	mkdir -p "$d/rootfs/bin" "$d/rootfs/sbin" "$d/rootfs/etc" "$d/rootfs/lib" "$d/rootfs/proc" "$d/rootfs/sys" "$d/rootfs/dev" "$d/rootfs/tmp" "$d/rootfs/root" "$d/rootfs/run" "$d/rootfs/mnt"
 	cp /bin/busybox "$d/rootfs/bin/busybox"
 	cp /lib/ld-musl-*.so.1 "$d/rootfs/lib/"
-	for a in sh cat sleep mount ls grep init id date tr cut true; do ln -s busybox "$d/rootfs/bin/$a"; done
-	ln -s ../bin/busybox "$d/rootfs/sbin/init"
-	echo "::sysinit:/bin/true" >"$d/rootfs/etc/inittab"
-	echo "::respawn:/bin/sleep 3600" >>"$d/rootfs/etc/inittab"
+	for a in sh cat sleep mount ls grep id date tr cut true rm touch; do ln -s busybox "$d/rootfs/bin/$a"; done
+	install -m 0755 /tmp/smoke-init "$d/rootfs/sbin/init"
+	rm -f /tmp/smoke-init
 	printf "architecture: %s\ncreation_date: %s\nproperties:\n  description: smoke\n  os: smoke\n" "$(uname -m)" "$(date +%s)" >"$d/metadata.yaml"
 	tar -C "$d" -cf /tmp/smoke-image.tar metadata.yaml rootfs
 	incus image import /tmp/smoke-image.tar --alias smoke >/dev/null
@@ -197,17 +231,42 @@ docker rm -f "$SECOND" >/dev/null
 ok "second container on the same data directory refused with 75, the first untouched"
 
 before_stop=$(count 'stopping incus')
-start=$(date +%s)
-docker stop "$MAIN" >/dev/null
-took=$(($(date +%s) - start))
-[ "$(docker inspect -f '{{.State.ExitCode}}' "$MAIN")" = 0 ] || fail "docker stop: exit $(docker inspect -f '{{.State.ExitCode}}' "$MAIN")"
+stop_in_order "docker stop"
 [ "$(count 'stopping incus')" = $((before_stop + 1)) ] || fail "docker stop did not go through the graceful path"
 [ "$(count 'incus stopped')" = 1 ] || fail "no 'incus stopped' after docker stop"
-ok "docker stop: exit 0 in ${took}s, graceful"
+ok "docker stop: exit 0 in ${took}s, instance shut down in order"
 
 docker start "$MAIN" >/dev/null
 check_state "after docker stop"
 ok "instance back RUNNING after docker stop/start, limits intact"
+
+# An operation incus cannot cancel (a stop the instance ignores; an export or an
+# image download alike) held the shutdown of every instance back for up to
+# core.shutdown_timeout, 5 minutes: Docker SIGKILLed them all first.
+in_main incus launch smoke slow -c boot.host_shutdown_timeout=5 >/dev/null || fail "launching a second instance"
+in_main incus exec slow -- touch /root/stubborn || fail "marking slow as stubborn"
+docker exec -d "$MAIN" incus stop slow --timeout 300
+for _ in $(seq 1 30); do
+	in_main incus operation list -f csv 2>/dev/null | grep 'Stopping instance' | grep -q RUNNING && break
+	sleep 1
+done
+in_main incus operation list -f csv | grep 'Stopping instance' | grep -q RUNNING || fail "no running stop operation"
+stop_in_order "docker stop during an operation"
+docker start "$MAIN" >/dev/null
+check_state "after a stop during an operation"
+in_main incus delete -f slow >/dev/null || fail "deleting slow"
+ok "docker stop while an operation that cannot be cancelled runs: ${took}s, instance shut down in order"
+
+# The client cannot reach the API (socket 0600, root only): SIGPWR asks incusd
+# for the same shutdown. SIGTERM was a reload: the instances kept running, the
+# stop waited on their LXC monitors and Docker SIGKILLed everything.
+docker exec -u 0 "$MAIN" chmod 600 /var/lib/incus/unix.socket
+before_pwr=$(count 'sending SIGPWR')
+stop_in_order "docker stop with the API out of reach"
+[ "$(count 'sending SIGPWR')" = $((before_pwr + 1)) ] || fail "docker stop with the API out of reach: no SIGPWR fallback"
+docker start "$MAIN" >/dev/null
+check_state "after a stop with the API out of reach"
+ok "docker stop with the API out of reach: SIGPWR, ${took}s, instance shut down in order"
 
 plant_stale() {
 	# A pidfile naming a live pid of the new namespace (1), a plain file where the
@@ -232,7 +291,60 @@ ok "$CYCLES x docker kill with stale files planted: incus and the instance came 
 in_main incus exec smk -- true || fail "instance not usable after the kill cycles"
 ok "instance usable after the kill cycles"
 
-in_main sudo killall -KILL incusd
+# lxcfs serves the instances' /proc views: restarted when it dies, and an
+# instance restart picks it up again.
+old="$(in_main pidof lxcfs)"
+[ "$(in_main cat "/proc/$old/oom_score_adj")" = -1000 ] || fail "lxcfs within the OOM killer's reach"
+in_main sudo killall -KILL lxcfs
+# A pid other than the old one, not a zombie: pidof lists those too.
+lxcfs_back() {
+	in_main sh -c 'for p in $(pidof lxcfs); do [ "$p" != "$1" ] && grep -q "^State:[[:space:]]*[^Z[:space:]]" /proc/$p/status && exit 0; done; exit 1' sh "$old"
+}
+for _ in $(seq 1 30); do
+	lxcfs_back && break
+	sleep 1
+done
+lxcfs_back || fail "lxcfs not restarted after it died"
+[ "$(in_main sh -c 'cat /proc/$(pidof lxcfs)/oom_score_adj')" = -1000 ] || fail "restarted lxcfs within the OOM killer's reach"
+[ "$(count 'lxcfs exited, restarting it')" = 1 ] || fail "lxcfs restart not logged"
+in_main incus restart smk || fail "restarting smk after lxcfs died"
+wait_instance
+[ "$(in_main incus exec smk -- cat /proc/meminfo | grep -m1 MemTotal | tr -s ' ' | cut -d' ' -f2)" = 65536 ] ||
+	fail "lxcfs view of limits.memory not back after lxcfs died"
+ok "lxcfs out of the OOM killer's reach; killed: restarted, the instance gets its /proc views back at its restart"
+
+# The proxy's master SIGKILLed: its orphaned worker still holds the port. An
+# nginx of alpine's that is not the proxy (in a privileged instance, uid 1000
+# is alpine's) must outlive the restart.
+in_main sh -c 'mkdir -p /tmp/decoy && printf "#!/bin/sh\nwhile :; do sleep 1; done\n" >/tmp/decoy/nginx && chmod +x /tmp/decoy/nginx'
+docker exec -d "$MAIN" /tmp/decoy/nginx
+sleep 1
+in_main pgrep -f /tmp/decoy/nginx >/dev/null || fail "decoy nginx did not start"
+in_main sh -c 'kill -KILL "$(cat /tmp/incus-ui/nginx.pid)"'
+code=""
+for _ in $(seq 1 30); do
+	sleep 1
+	[ "$(count 'web UI proxy exited, restarting it')" = 1 ] || continue
+	code="$(in_main curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ui/ || true)"
+	[ "$code" = 200 ] && break
+done
+[ "$code" = 200 ] || fail "web UI proxy not back after it died (HTTP $code)"
+[ "$(in_main sh -c 'cat /proc/$(cat /tmp/incus-ui/nginx.pid)/comm')" = nginx ] || fail "web UI proxy pidfile stale"
+in_main pgrep -f /tmp/decoy/nginx >/dev/null || fail "restarting the web UI proxy killed another nginx"
+in_main pkill -f /tmp/decoy/nginx || true
+ok "web UI proxy killed: restarted, 8080 answers again, other nginx processes untouched"
+
+# incusd loads server.crt/server.key whenever both exist: a pair cut short by a
+# power loss during its first start failed every later start.
+docker stop "$MAIN" >/dev/null
+docker run --rm -u 0 --entrypoint sh -v "$DATA":/d "$IMAGE" -c ': >/d/server.key'
+docker start "$MAIN" >/dev/null
+check_state "after a server certificate cut short"
+[ "$(count 'do not load as a pair')" = 1 ] || fail "torn server certificate not reported"
+ok "server certificate cut short: set aside, incusd makes a new one, instance back"
+
+# The daemon only: pidof incusd would also hit the LXC monitors.
+in_main sh -c 'sudo kill -KILL "$(cat /run/incus-env.pid)"'
 for _ in $(seq 1 30); do
 	[ "$(docker inspect -f '{{.State.Running}}' "$MAIN")" = false ] && break
 	sleep 1
@@ -255,5 +367,25 @@ done
 docker start "$MAIN" >/dev/null
 check_state "after a double SIGTERM"
 ok "double SIGTERM: one graceful shutdown, exit 0, instance back"
+
+# A crash of the whole container (OOM kill, a SIGKILL to PID 1): unlike
+# docker kill, which counts as a manual stop, the restart policy brings it back.
+docker update --restart unless-stopped "$MAIN" >/dev/null
+restarts="$(docker inspect -f '{{.RestartCount}}' "$MAIN")"
+pid="$(docker inspect -f '{{.State.Pid}}' "$MAIN")"
+docker run --rm --privileged --pid host -u 0 --entrypoint kill "$IMAGE" -KILL "$pid"
+back=false
+for _ in $(seq 1 60); do
+	if [ "$(docker inspect -f '{{.RestartCount}}' "$MAIN")" -gt "$restarts" ] &&
+		[ "$(docker inspect -f '{{.State.Running}}' "$MAIN")" = true ]; then
+		back=true
+		break
+	fi
+	sleep 1
+done
+[ "$back" = true ] || fail "restart policy did not bring the container back after its PID 1 was killed"
+check_state "after a crash of the container"
+docker update --restart no "$MAIN" >/dev/null
+ok "PID 1 SIGKILLed from the host: restart policy brings incus and the instance back"
 
 echo "all checks passed"

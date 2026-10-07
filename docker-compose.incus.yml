@@ -72,16 +72,20 @@ services:
       INCUS_ENV_UI_PROXY: ${INCUS_ENV_UI_PROXY:-on}
       INCUS_ENV_UI_USER: ${INCUS_ENV_UI_USER:-}
       INCUS_ENV_UI_PASSWORD: ${INCUS_ENV_UI_PASSWORD:-}
+      # Seconds a stop gives `incus admin shutdown` (instances, then the daemon).
+      # The whole stop takes at most this + 10s: keep stop_grace_period above it.
+      INCUS_ENV_SHUTDOWN_TIMEOUT: ${INCUS_ENV_SHUTDOWN_TIMEOUT:-100}
     volumes:
       # Bind mounts: INCUS_DATA holds the database, the images and the instances
       # (the `dir` storage pool lives here), ALPINE_HOME the home of alpine.
       # Docker creates missing paths as root.
       - ${INCUS_DATA:-./data/incus/data}:/var/lib/incus
       - ${ALPINE_HOME:-./data/incus/alpine-home}:/home/alpine
-    # incus stops the instances one by one (INCUS_ENV_SHUTDOWN_TIMEOUT, 100s by
-    # default, is capped by this). Past the grace period Docker SIGKILLs it all
+    # incus stops the instances in parallel (as many at a time as CPUs), each
+    # within its boot.host_shutdown_timeout (30s by default), all within
+    # INCUS_ENV_SHUTDOWN_TIMEOUT. Past the grace period Docker SIGKILLs it all
     # and the instances come back as after a crash.
-    stop_grace_period: 120s
+    stop_grace_period: ${INCUS_STOP_GRACE_PERIOD:-120s}
     logging:
       driver: json-file
       options:

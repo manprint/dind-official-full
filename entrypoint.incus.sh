@@ -7,6 +7,10 @@ set -eu
 UID_NOW="$(id -u)"
 INCUSD_PID=""
 INCUSD_LOG=""
+# The daemon's pid, written by the root side as it execs incusd. pidof incusd
+# is no substitute: the LXC monitors carry the same name, and they forward the
+# signals they get to their instance's init.
+INCUSD_PIDFILE=/run/incus-env.pid
 DATA_LOCK=/var/lib/incus/.incus-env.lock
 INIT_MARKER=/var/lib/incus/.incus-env-initialized
 LXCFS_DIR=/var/lib/lxcfs
@@ -21,6 +25,14 @@ UI_PID=""
 UI_PORT=8080
 UI_CERT_DIR=/home/alpine/.config/incus-ui
 UI_RUN_DIR=/tmp/incus-ui
+# Set once the API answered and was configured; until then supervise() retries.
+CONFIGURED=""
+# Set when lxcfs ran at configure time: only then does supervise() restart it.
+LXCFS_WANTED=""
+# Restarts left to supervise() for lxcfs and the web UI proxy, so that one
+# that cannot run does not fill the log.
+LXCFS_RESTARTS=5
+UI_RESTARTS=5
 
 as_root() {
 	if [ "$UID_NOW" = "0" ]; then
@@ -28,6 +40,14 @@ as_root() {
 	else
 		sudo -n -- "$@"
 	fi
+}
+
+# True when $1 is a certificate and $2 the private key that goes with it.
+# Catches the empty or torn files a power loss leaves behind a first start.
+cert_pair_ok() {
+	pub_crt="$(openssl x509 -in "$1" -noout -pubkey 2>/dev/null)" || return 1
+	pub_key="$(openssl pkey -in "$2" -pubout -passin pass: </dev/null 2>/dev/null)" || return 1
+	[ -n "$pub_crt" ] && [ "$pub_crt" = "$pub_key" ]
 }
 
 # A dotfile without the dind-env- marker is the user's own (e.g. a home
@@ -75,9 +95,18 @@ write_env_name() {
 	fi
 }
 
+# pidof also lists a zombie: an lxcfs that died while its parent was busy.
+lxcfs_alive() {
+	for lxpid in $(pidof lxcfs 2>/dev/null); do
+		read -r _ _ lxstate _ 2>/dev/null <"/proc/$lxpid/stat" || continue
+		[ "$lxstate" = Z ] || return 0
+	done
+	return 1
+}
+
 # pidof, not pgrep -x: busybox pgrep matches argv[0] only.
 daemon_running() {
-	pidof incusd >/dev/null 2>&1 || pidof lxcfs >/dev/null 2>&1
+	pidof incusd >/dev/null 2>&1 || lxcfs_alive
 }
 
 # /run and /var/lib/incus persist across container restarts (the writable
@@ -97,7 +126,7 @@ cleanup_stale_runtime_state() {
 		return 0
 	fi
 	echo "[incus-entrypoint] cleaning stale incus runtime state"
-	as_root rm -rf /run/incus /run/lxc 2>/dev/null || true
+	as_root rm -rf /run/incus /run/lxc "$INCUSD_PIDFILE" 2>/dev/null || true
 	# The mount belongs to a mount namespace that is gone, unless the script is
 	# re-run inside a live container; the check above covers that.
 	as_root umount -l "$LXCFS_DIR" 2>/dev/null || true
@@ -159,26 +188,39 @@ wait_incus() {
 }
 
 # Exactly one graceful request: `incus admin shutdown` stops the instances
-# (each with its own timeout) and then the daemon. SIGTERM is only the way out
-# when the API is unreachable.
+# (each within its boot.host_shutdown_timeout, as many at a time as there are
+# CPUs) and then the daemon. --force only skips waiting for the running
+# operations: without it an operation that cannot be cancelled (an export, an
+# image download) held the instances' shutdown back until it ended, up to
+# core.shutdown_timeout (5 minutes), well past stop_grace_period. When the API
+# does not answer, SIGPWR asks incusd for the same shutdown. Not SIGTERM: that
+# is incusd's reload, it exits and leaves the instances running, to be killed
+# with the container. The whole stop stays within SHUTDOWN_TIMEOUT + 10s.
 stop_incusd() {
 	kill -0 "$INCUSD_PID" 2>/dev/null || return 0
 	echo "[incus-entrypoint] stopping incus (instances first, up to ${SHUTDOWN_TIMEOUT}s)"
-	if ! timeout $((SHUTDOWN_TIMEOUT + 30)) incus admin shutdown --timeout "$SHUTDOWN_TIMEOUT" >/dev/null 2>&1; then
-		echo "[incus-entrypoint] graceful shutdown failed, sending SIGTERM" >&2
-		as_root killall -TERM incusd 2>/dev/null || true
+	deadline=$(($(date +%s) + SHUTDOWN_TIMEOUT))
+	if ! out="$(timeout $((SHUTDOWN_TIMEOUT + 5)) incus admin shutdown --force --timeout "$SHUTDOWN_TIMEOUT" 2>&1)"; then
+		echo "[incus-entrypoint] shutdown through the API failed (${out:-no answer}), sending SIGPWR" >&2
+		# To the daemon only, never by name (see INCUSD_PIDFILE). A shutdown
+		# already under way ignores it and keeps its time below.
+		pid="$(cat "$INCUSD_PIDFILE" 2>/dev/null || true)"
+		if [ -n "$pid" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = incusd ]; then
+			as_root kill -PWR "$pid" 2>/dev/null || true
+		fi
 	fi
-	i=0
-	while [ "$i" -lt 240 ]; do
-		pidof incusd >/dev/null 2>&1 || break
-		i=$((i + 1))
+	# Our launch lives as long as incusd does: sudo waits for it.
+	while kill -0 "$INCUSD_PID" 2>/dev/null && [ "$(date +%s)" -lt $((deadline + 5)) ]; do
 		sleep 0.5
 	done
+	if kill -0 "$INCUSD_PID" 2>/dev/null; then
+		echo "[incus-entrypoint] WARNING: incusd still running after ${SHUTDOWN_TIMEOUT}s, its instances stop with the container" >&2
+	fi
 	# lxcfs unmounts itself on SIGTERM.
 	as_root killall -TERM lxcfs 2>/dev/null || true
 	i=0
-	while [ "$i" -lt 20 ]; do
-		pidof lxcfs >/dev/null 2>&1 || break
+	while [ "$i" -lt 10 ]; do
+		lxcfs_alive || break
 		i=$((i + 1))
 		sleep 0.5
 	done
@@ -193,15 +235,54 @@ shutdown() {
 	exit "${1:-0}"
 }
 
+# Run between two checks of supervise(): the configuration incus did not answer
+# in time for (wait_incus), and lxcfs or the web UI proxy when they died.
+# lxcfs gives the instances their /proc and /sys views: the instances already
+# running keep the dead ones until they restart, the ones started afterwards
+# get the new lxcfs.
+heal() {
+	if [ -z "$CONFIGURED" ] && pidof incusd >/dev/null 2>&1 && timeout 5 incus info >/dev/null 2>&1; then
+		echo "[incus-entrypoint] incus answers now, configuring it"
+		configure
+	fi
+	if [ -n "$LXCFS_WANTED" ] && ! lxcfs_alive; then
+		if [ "$LXCFS_RESTARTS" -gt 0 ]; then
+			LXCFS_RESTARTS=$((LXCFS_RESTARTS - 1))
+			echo "[incus-entrypoint] WARNING: lxcfs exited, restarting it; running instances read errors from /proc/meminfo, /proc/cpuinfo… until they restart (incus restart NAME)" >&2
+			as_root umount -l "$LXCFS_DIR" 2>/dev/null || true
+			# shellcheck disable=SC2016 # $1 is the inner shell's
+			as_root sh -c 'echo -1000 >/proc/self/oom_score_adj 2>/dev/null; exec lxcfs "$1"' sh "$LXCFS_DIR" &
+		else
+			echo "[incus-entrypoint] WARNING: lxcfs keeps exiting, not restarting it again" >&2
+			LXCFS_WANTED=""
+		fi
+	fi
+	if [ -n "$UI_PID" ] && ! kill -0 "$UI_PID" 2>/dev/null; then
+		if [ "$UI_RESTARTS" -gt 0 ]; then
+			UI_RESTARTS=$((UI_RESTARTS - 1))
+			echo "[incus-entrypoint] WARNING: web UI proxy exited, restarting it" >&2
+			# A master killed alone leaves its worker holding the port. Its process
+			# group, not every nginx: a privileged instance's run under uid 1000 too.
+			kill -KILL "-$UI_PID" 2>/dev/null || true
+			run_ui_proxy
+		else
+			echo "[incus-entrypoint] WARNING: web UI proxy keeps exiting, not restarting it again" >&2
+			UI_PID=""
+		fi
+	fi
+}
+
 supervise() {
-	# wait comes first: it also returns the status of a job the shell already
-	# reaped while running a foreground command, where kill -0 would fail and
-	# lose it (a lost lock's 75 would read as a plain failure).
-	while :; do
-		wait "$INCUSD_PID" 2>/dev/null && rc=0 || rc=$?
-		kill -0 "$INCUSD_PID" 2>/dev/null || break
-		sleep 1
+	# The shell reaps a finished job while it waits for another one, so kill -0
+	# turns false once incusd's launch has exited, and the wait after the loop
+	# still returns its saved status (a lost lock's 75, not a plain failure).
+	while kill -0 "$INCUSD_PID" 2>/dev/null; do
+		heal
+		# A trapped signal interrupts the wait: the trap stops incus and exits.
+		sleep 5 &
+		wait $! || true
 	done
+	wait "$INCUSD_PID" 2>/dev/null && rc=0 || rc=$?
 	echo "[incus-entrypoint] incus exited (status $rc)" >&2
 	if [ -n "$INCUSD_LOG" ]; then
 		tail -n 20 "$INCUSD_LOG" >&2 2>/dev/null || true
@@ -234,6 +315,25 @@ normalize_cidr() {
 }
 
 # ---- root side ----------------------------------------------------------
+
+# incusd generates server.crt and server.key at its first start and loads them
+# from then on whenever both exist, without generating them again: a pair left
+# empty or torn by a power loss during that start failed every later start, a
+# restart loop no restart policy gets out of. A pair that does not load is set
+# aside, and incusd makes a new one; remote clients that trusted the old
+# certificate (incus remote add) have to accept the new one.
+check_server_cert() {
+	crt=/var/lib/incus/server.crt
+	key=/var/lib/incus/server.key
+	{ [ -e "$crt" ] || [ -e "$key" ]; } || return 0
+	cert_pair_ok "$crt" "$key" && return 0
+	echo "[incus-entrypoint] WARNING: $crt and $key do not load as a pair, setting them aside: incusd generates a new server certificate" >&2
+	ts="$(date +%Y%m%d%H%M%S)"
+	for f in "$crt" "$key"; do
+		[ -e "$f" ] || continue
+		mv -f "$f" "$f.incus-env-corrupt.$ts" 2>/dev/null || rm -f "$f"
+	done
+}
 
 # Incus asks LXC for cgroups, and LXC (root, not relative) builds them next to
 # PID 1's cgroup, after enabling the controllers in that cgroup's parent. A
@@ -283,12 +383,30 @@ setup_cgroups() {
 
 # File-backed btrfs and lvm pools need loop devices; docker only passes
 # /dev/loop-control, the loopN nodes are ours to create (and are lost with the
-# container's /dev at every start). Best effort: "dir" pools do not need them.
+# container's /dev at every start). Loop devices belong to the host kernel:
+# losetup gets the first free one, or a new one after the last, and fails when
+# its node is missing here. Sixteen nodes were not enough on a host whose snaps
+# hold more, so they cover every loop device the host has plus 32. The minor
+# number is the index shifted by the loop module's partition bits (max_part).
+# Best effort: "dir" pools do not need them.
 setup_devices() {
 	[ -e /dev/loop-control ] || return 0
+	last=0
+	for d in /sys/block/loop*; do
+		n="${d#/sys/block/loop}"
+		case "$n" in "" | *[!0-9]*) continue ;; esac
+		[ "$n" -le "$last" ] || last="$n"
+	done
+	parts="$(cat /sys/module/loop/parameters/max_part 2>/dev/null)" || parts=0
+	case "$parts" in "" | *[!0-9]*) parts=0 ;; esac
+	step=1
+	while [ "$parts" -gt 0 ]; do
+		step=$((step * 2))
+		parts=$((parts / 2))
+	done
 	i=0
-	while [ "$i" -lt 16 ]; do
-		[ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i" 2>/dev/null || break
+	while [ "$i" -le $((last + 32)) ]; do
+		[ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 $((i * step)) 2>/dev/null || break
 		i=$((i + 1))
 	done
 	if [ ! -e /dev/mapper/control ] && [ -w /dev ]; then
@@ -326,6 +444,7 @@ exec_incusd_locked() {
 	if [ -n "$log" ] && (: >>"$log") 2>/dev/null; then
 		exec >>"$log" 2>&1
 	fi
+	check_server_cert
 	setup_cgroups
 	setup_devices
 	# Unprivileged instances map uids from this range.
@@ -335,9 +454,13 @@ exec_incusd_locked() {
 	# Instances mount things from the host side: they must propagate.
 	mount --make-rshared / 2>/dev/null || echo "[incus-entrypoint] WARNING: cannot make / rshared" >&2
 	# lxcfs gives the instances /proc and /sys views that follow their limits.
-	# It must not hold the lock: it can outlive a crashed incusd.
+	# It must not hold the lock: it can outlive a crashed incusd. Detached, so
+	# that tini reaps it: a child of the incusd exec'd below stays a zombie
+	# when it dies, and pidof keeps finding it. Out of the OOM killer's reach:
+	# the instances running when it dies get errors from its files until they
+	# restart, and it has no children that would inherit the setting.
 	mkdir -p "$LXCFS_DIR" /run/incus
-	lxcfs "$LXCFS_DIR" 9>&- &
+	(sh -c 'echo -1000 >/proc/self/oom_score_adj 2>/dev/null; exec lxcfs "$1"' sh "$LXCFS_DIR" 9>&- &)
 	i=0
 	while [ "$i" -lt 20 ]; do
 		grep -q " $LXCFS_DIR fuse" /proc/mounts && break
@@ -346,6 +469,7 @@ exec_incusd_locked() {
 	done
 	grep -q " $LXCFS_DIR fuse" /proc/mounts ||
 		echo "[incus-entrypoint] WARNING: lxcfs is not mounted (is /dev/fuse passed in?), instances will see the host's /proc" >&2
+	echo "$$" >"$INCUSD_PIDFILE" 2>/dev/null || true
 	exec incusd --group incus-admin "$@"
 }
 
@@ -363,6 +487,10 @@ fi
 preseed_incus() {
 	driver="${INCUS_ENV_STORAGE_DRIVER:-dir}"
 	bridge_addr="auto"
+	if ! preseed="$(mktemp)"; then
+		echo "[incus-entrypoint] WARNING: cannot create the preseed file, it is retried at the next start" >&2
+		return 0
+	fi
 	if [ -n "${INCUS_ENV_BRIDGE_ADDRESS:-}" ]; then
 		if bridge_addr="$(normalize_cidr "$INCUS_ENV_BRIDGE_ADDRESS")"; then
 			echo "[incus-entrypoint] bridge $BRIDGE on $bridge_addr (INCUS_ENV_BRIDGE_ADDRESS=$INCUS_ENV_BRIDGE_ADDRESS)"
@@ -398,14 +526,18 @@ preseed_incus() {
 		echo "      name: eth0"
 		echo "      network: $BRIDGE"
 		echo "      type: nic"
-	} >/tmp/incus-preseed.yaml
-	if timeout 120 incus admin init --preseed </tmp/incus-preseed.yaml; then
+	} >"$preseed" || {
+		echo "[incus-entrypoint] WARNING: cannot write the preseed, it is retried at the next start" >&2
+		rm -f "$preseed"
+		return 0
+	}
+	if timeout 120 incus admin init --preseed <"$preseed"; then
 		echo "[incus-entrypoint] preseed applied: storage pool default ($driver), bridge $BRIDGE"
 		as_root touch "$INIT_MARKER" || true
 	else
 		echo "[incus-entrypoint] WARNING: preseed failed (storage driver '$driver'?), it is retried at the next start" >&2
 	fi
-	rm -f /tmp/incus-preseed.yaml
+	rm -f "$preseed"
 }
 
 # Each start: the API address, a changed bridge subnet and the trusted client
@@ -482,7 +614,7 @@ start_ui_proxy() {
 	fi
 	crt="$UI_CERT_DIR/client.crt"
 	key="$UI_CERT_DIR/client.key"
-	if [ ! -s "$crt" ] || [ ! -s "$key" ]; then
+	if ! cert_pair_ok "$crt" "$key"; then
 		echo "[incus-entrypoint] generating the web UI client certificate in $UI_CERT_DIR"
 		rm -f "$crt" "$key"
 		if ! openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
@@ -502,6 +634,9 @@ start_ui_proxy() {
 			;;
 		esac
 
+	# Last start's files must not survive a write that fails now: an old
+	# htpasswd or configuration would keep a password the environment dropped.
+	rm -f "$UI_RUN_DIR/htpasswd" "$UI_RUN_DIR/nginx.conf"
 	auth=""
 	if [ -n "${INCUS_ENV_UI_PASSWORD:-}" ]; then
 		hash="$(printf '%s' "$INCUS_ENV_UI_PASSWORD" | openssl passwd -apr1 -stdin 2>/dev/null)" || hash=""
@@ -509,11 +644,14 @@ start_ui_proxy() {
 			echo "[incus-entrypoint] WARNING: web UI proxy skipped, cannot hash INCUS_ENV_UI_PASSWORD" >&2
 			return 0
 		fi
-		(umask 077 && printf '%s:%s\n' "${INCUS_ENV_UI_USER:-admin}" "$hash" >"$UI_RUN_DIR/htpasswd")
+		if ! (umask 077 && printf '%s:%s\n' "${INCUS_ENV_UI_USER:-admin}" "$hash" >"$UI_RUN_DIR/htpasswd"); then
+			echo "[incus-entrypoint] WARNING: web UI proxy skipped, cannot write $UI_RUN_DIR/htpasswd" >&2
+			return 0
+		fi
 		auth="auth_basic \"Incus UI\"; auth_basic_user_file $UI_RUN_DIR/htpasswd;"
 	fi
 
-	cat >"$UI_RUN_DIR/nginx.conf" <<NGINX
+	cat >"$UI_RUN_DIR/nginx.conf" <<NGINX || true
 worker_processes 1;
 pid $UI_RUN_DIR/nginx.pid;
 error_log stderr warn;
@@ -549,13 +687,32 @@ http {
 	}
 }
 NGINX
-	if ! nginx -t -c "$UI_RUN_DIR/nginx.conf" >/dev/null 2>&1; then
+	if ! nginx -e stderr -t -c "$UI_RUN_DIR/nginx.conf" >/dev/null 2>&1; then
 		echo "[incus-entrypoint] WARNING: web UI proxy skipped, invalid nginx configuration" >&2
 		return 0
 	fi
-	nginx -c "$UI_RUN_DIR/nginx.conf" -g 'daemon off;' &
-	UI_PID=$!
+	run_ui_proxy
 	echo "[incus-entrypoint] web UI on http://HOST:$UI_PORT/ (no browser certificate needed)"
+}
+
+# -e stderr: before reading the configuration nginx opens its compiled-in error
+# log, which alpine cannot write ("[alert] could not open error log file").
+# setsid: master and workers in a process group of their own, numbered after
+# the master, so heal() can reach a worker that outlived it.
+run_ui_proxy() {
+	setsid nginx -e stderr -c "$UI_RUN_DIR/nginx.conf" -g 'daemon off;' &
+	UI_PID=$!
+}
+
+# Once the API answers. Called as a condition, so a failing command inside
+# cannot end the script through set -e: nothing here may keep the daemon down.
+configure() {
+	configure_incus || true
+	start_ui_proxy || true
+	CONFIGURED=1
+	if lxcfs_alive; then
+		LXCFS_WANTED=1
+	fi
 }
 
 prepare_home
@@ -570,6 +727,15 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ] || [ "$1" = "incusd" ]; then
 fi
 
 if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
+	# Without leading zeros, which $(( )) would read as octal: 090 is an
+	# arithmetic error, fatal to the shell, in the middle of the shutdown.
+	SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT#"${SHUTDOWN_TIMEOUT%%[!0]*}"}"
+	case "$SHUTDOWN_TIMEOUT" in
+	"" | *[!0-9]*)
+		echo "[incus-entrypoint] WARNING: INCUS_ENV_SHUTDOWN_TIMEOUT '${INCUS_ENV_SHUTDOWN_TIMEOUT:-}' is not a positive number of seconds, using 100" >&2
+		SHUTDOWN_TIMEOUT=100
+		;;
+	esac
 	trap shutdown INT TERM
 	# Keep the interactive terminal for the shell.
 	if [ -t 0 ]; then
@@ -580,8 +746,7 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
 	as_root "$0" __incus_env_daemon "$INCUSD_LOG" "$@" &
 	INCUSD_PID=$!
 	if wait_incus; then
-		configure_incus
-		start_ui_proxy
+		configure || true
 		if [ -t 0 ]; then
 			run_as_alpine_child /bin/bash -l || true
 			shutdown

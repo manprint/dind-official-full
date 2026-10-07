@@ -1,6 +1,6 @@
 # Incus-in-Docker
 
-Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container di sistema, niente VM) dentro un container Docker. Branch `incus`, `Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`.
+Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container di sistema, niente VM) dentro un container Docker: `Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`, `tests/templates.sh`. Rilasciata dalla stessa pipeline delle altre varianti.
 
 - Daemon `incusd` compilato dai sorgenti (7.5.1; Alpine 3.24 pacchettizza solo la 7.0.1 LTS), client `incus`, `fuidshift`.
 - **Client web ufficiale** (`incus-ui-canonical`), servito dal daemon su `https://HOST:8443/ui/` e, **senza nessun certificato nel browser**, su `http://HOST:8080/` tramite un proxy interno.
@@ -8,7 +8,7 @@ Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container 
 - Preseed al primo avvio: pool di storage `default`, bridge `incusbr0`, profilo `default`.
 - Stessa base della variante minimal: utente `alpine` + sudo, rclone, fuse, dotfile con prompt `alpine@host(env)(branch)`, `DIND_ENVIRONMENT_NAME`.
 - Nessun Docker dentro l'immagine (Docker si installa *dentro* le istanze, vedi sotto).
-- **Template per creare istanze** (Alpine 3.24, Debian 13) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: vedi la sezione dedicata.
+- **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 44) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: vedi la sezione dedicata.
 
 ## Avvio
 
@@ -40,10 +40,10 @@ Non è `privileged: true`: bastano questi permessi, tutti già nel compose.
 | `security_opt: systempaths=unconfined` | `/proc` e `/sys` senza i path mascherati/read-only di Docker. |
 | `cgroup: private` | cgroup namespace proprio: sotto la radice del container nascono i cgroup delle istanze. Serve cgroup v2 sull'host. |
 | `devices: /dev/fuse` | lxcfs (vista `/proc/meminfo`, `cpuinfo`… coerente coi limiti) è un filesystem FUSE. |
-| `devices: /dev/loop-control` + `device_cgroup_rules: b 7:*` | pool btrfs/lvm su file (loop). L'entrypoint crea i nodi `loop0..15`. |
+| `devices: /dev/loop-control` + `device_cgroup_rules: b 7:*` | pool btrfs/lvm su file (loop). L'entrypoint crea a ogni avvio i nodi `loopN` per tutti i loop device dell'host più 32, con il minor giusto anche se il modulo `loop` ha `max_part`. |
 | `devices: /dev/net/tun` + regola `c 10:200` | istanze con VPN (TUN). |
 | `device_cgroup_rules: c 10:236, c 10:237` | device-mapper e loop-control per LVM. |
-| `restart: unless-stopped`, `stop_grace_period: 120s` | ripartenza dopo crash/reboot dell'host; il tempo per fermare le istanze una a una. |
+| `restart: unless-stopped`, `stop_grace_period: 120s` | ripartenza dopo crash/reboot dell'host; il tempo per fermare le istanze (in parallelo, v. *Stabilità*). |
 
 Anche `privileged: true` funziona, ma non serve.
 
@@ -65,7 +65,8 @@ Anche `privileged: true` funziona, ma non serve.
 | `INCUS_ENV_UI_USER` / `INCUS_ENV_UI_PASSWORD` | `admin` / — | con la password il proxy chiede HTTP basic auth |
 | `INCUS_ENV_HTTPS_ADDRESS` | `:8443` | `core.https_address`; `none` spegne API e UI. A ogni avvio |
 | `INCUS_ENV_TRUST_CERT_FILE` / `_NAME` | — | certificato client (PEM, leggibile nel container) da fidare a ogni avvio, idempotente |
-| `INCUS_ENV_SHUTDOWN_TIMEOUT` | `100` | secondi concessi a `incus admin shutdown` (tienila sotto `stop_grace_period`) |
+| `INCUS_ENV_SHUTDOWN_TIMEOUT` | `100` | secondi concessi allo stop di Incus (istanze, poi daemon): lo stop intero dura al massimo questo + 10 s. Un valore non numerico o 0 diventa 100, con un warning |
+| `INCUS_STOP_GRACE_PERIOD` | `120s` | `stop_grace_period` del container: oltre, Docker uccide tutto. Tienila almeno 10 s sopra `INCUS_ENV_SHUTDOWN_TIMEOUT` |
 
 Il preseed gira una volta (marcatore `/var/lib/incus/.incus-env-initialized`): quello che l'utente cambia dopo non viene rimesso a posto.
 
@@ -218,7 +219,7 @@ Si copiano dove serve (un container con il client `incus`, un'altra macchina con
 | utente | uid **1000** (configurabile) con gruppo, home e shell bash; password `password`; gruppo `sudo`/`wheel` (sudo chiede la password, `USER_SUDO_NOPASSWD=true` per toglierla) |
 | ora, lingua, tastiera | `Europe/Rome`, locale `it_IT.UTF-8` (`LANG`, `LC_ALL`, `LANGUAGE`), tastiera `it` (`/etc/default/keyboard`, `/etc/vconsole.conf` tranne Alpine) |
 | ssh | server installato e attivo, accesso con password, **root disabilitato**; client `ssh`/`scp`/`sftp` |
-| Docker | Alpine: pacchetti `docker` + `docker-cli-compose`; Debian/Ubuntu/Fedora: repository ufficiale Docker (`docker-ce` + plugin compose; se fallisce ricade su `docker.io` / `moby-engine`). L'utente è nel gruppo `docker`, `daemon.json` con rotazione dei log |
+| Docker | Alpine: pacchetti `docker` + `docker-cli-compose`; Debian/Ubuntu/Fedora: repository ufficiale Docker (`docker-ce` + plugin compose); se fallisce, o con `DOCKER_SOURCE=distro`, i pacchetti della distribuzione (`docker.io` + `docker-compose` su Debian, `docker.io` + `docker-compose-v2` su Ubuntu, `moby-engine` + `docker-compose` su Fedora). L'utente è nel gruppo `docker`, `daemon.json` con rotazione dei log |
 | rete | `ip`, `ping`, `dig`, `tcpdump`, `traceroute`, `mtr`, `nmap`, `nc`, `socat`, `iperf3`, `ethtool`, `ss`/`netstat`, `conntrack`, `iptables`, `nft` |
 | rclone + fuse | rclone ufficiale (ultima release, checksum verificato), `fuse`/`fuse3`, `user_allow_other` in `/etc/fuse.conf` |
 | shell | `bash-completion` (anche per root) e alias **`ll='ls -alFh'` per tutti gli utenti**, shell di login e non (`/etc/profile.d/10-aliases.sh` + `/etc/bash/10-aliases.sh` su Alpine, `/etc/bash.bashrc` su Debian) |
@@ -258,10 +259,10 @@ Tutte con un default in testata, sovrascrivibili dall'ambiente.
 | `USER_NAME`, `USER_UID` | `alpine`/`debian`/`ubuntu`/`fedora`, `1000` | utente |
 | `USER_PASSWORD`, `USER_SHELL` | `password`, `/bin/bash` | |
 | `USER_SUDO`, `USER_SUDO_NOPASSWD` | `true`, `false` | |
-| `TIMEZONE`, `LOCALE`, `KEYMAP` | `Europe/Rome`, `it_IT.UTF-8`, `it` | |
+| `TIMEZONE`, `LOCALE`, `KEYMAP` | `Europe/Rome`, `it_IT.UTF-8`, `it` | su Fedora il langpack segue `LOCALE` (`en_US.UTF-8` → `glibc-langpack-en`) |
 | `SSH_PASSWORD_AUTH`, `SSH_PERMIT_ROOT` | `yes`, `no` | |
 | `INSTALL_DOCKER`, `INSTALL_NET_TOOLS`, `INSTALL_RCLONE` | `true` | |
-| `DOCKER_SOURCE` (non Alpine) | `official` | `official` o `distro` (`docker.io` su Debian/Ubuntu, `moby-engine` su Fedora) |
+| `DOCKER_SOURCE` (non Alpine) | `official` | `official` o `distro` (`docker.io` su Debian/Ubuntu, `moby-engine` su Fedora, con il loro `docker compose`) |
 | `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE` | `10m`, `5` | |
 | `RCLONE_RELEASE` | `current` | o una versione, es. `v1.70.0` (non `RCLONE_VERSION`: rclone la legge come `--version`) |
 | `EXTRA_PACKAGES` | vuoto | altri pacchetti apk/apt/dnf |
@@ -282,11 +283,12 @@ OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non pu
 
 ### Verifica eseguita
 
-`tests/templates.sh IMAGE [alpine|debian13|ubuntu2404|ubuntu2604|fedora ...]` (`just templates-incus TAG [template...]`) avvia l'immagine su bind mount nuovi, lancia ogni script con i suoi default (più `INSTANCE_SWAP=1GiB`), verifica, riavvia l'istanza e ripete i controlli. Serve internet (immagini delle istanze, pacchetti, repository Docker, rclone), quindi **non** fa parte della pipeline di release, il cui smoke test non usa registry. `SCRIPTS_DIR=scripts` prova gli script del working tree invece di quelli nell'immagine.
+`tests/templates.sh IMAGE [alpine|debian13|ubuntu2404|ubuntu2604|fedora ...]` (`just templates-incus TAG [template...]`) avvia l'immagine su bind mount nuovi, lancia ogni script con i suoi default (più `INSTANCE_SWAP=1GiB`), verifica, riavvia l'istanza e ripete i controlli. Serve internet (immagini delle istanze, pacchetti, repository Docker, rclone), quindi **non** fa parte della pipeline di release, il cui smoke test non usa registry. `SCRIPTS_DIR=scripts` prova gli script del working tree invece di quelli nell'immagine; `TPL_ENV="DOCKER_SOURCE=distro"` aggiunge impostazioni a ogni esecuzione degli script.
 
 | Verifica (tutte OK su ciascun template) | Alpine 3.24 | Debian 13 | Ubuntu 24.04 | Ubuntu 26.04 | Fedora 44 |
 |---|---|---|---|---|---|
-| creazione e provisioning da zero | 19–25 s | 29 s | 37–40 s | 37 s | ~160 s (dnf) |
+| creazione e provisioning da zero | 19–25 s | 26–29 s | 37–43 s | 37–40 s | 43–160 s (dnf) |
+| la riga finale dello script riporta l'IP dell'istanza | ✓ | ✓ | ✓ | ✓ | ✓ |
 | utente uid 1000, home, bash, gruppi (`wheel`/`sudo`, `docker`) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `Europe/Rome`, `CET/CEST`, `LANG`/`LC_ALL=it_IT.UTF-8` in login shell e in una sessione ssh interattiva, locale generato, tastiera `it` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | ssh: login con password; password errata e `root` rifiutati | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -299,8 +301,9 @@ OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non pu
 | ssh e Docker attivi, `docker run -m 100m --cpus 0.5` → `104857600` / `50000 100000` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | stessi controlli dopo il riavvio dell'istanza | ✓ | ✓ | ✓ | ✓ | ✓ |
 | seconda esecuzione senza `INSTANCE_RECREATE`: errore | ✓ | ✓ | ✓ | ✓ | ✓ |
+| tutta la tabella con `DOCKER_SOURCE=distro` (pacchetti Docker della distribuzione) | — | ✓ | ✓ | ✓ | — |
 
-Non ripetuti per ogni script (stesso codice): `INSTANCE_IPV4`, `INSTANCE_SSH_PUBLISH_PORT`, utente/uid/password/timezone diversi, `EXTRA_PACKAGES`, `USER_SUDO_NOPASSWD`, `INSTALL_*=false`, memoria/CPU vuote, `INSTANCE_SWAP=0` e `off`, `DOCKER_SOURCE=distro`. La conversione di `INSTANCE_SWAP` (`1GiB`, `512MiB`, `0`) è provata a mano su Alpine.
+Non ripetuti per ogni script (stesso codice): `INSTANCE_IPV4`, `INSTANCE_SSH_PUBLISH_PORT`, utente/uid/password/timezone diversi, `EXTRA_PACKAGES`, `USER_SUDO_NOPASSWD`, `INSTALL_*=false`, memoria/CPU vuote, `INSTANCE_SWAP=0` e `off`. La conversione di `INSTANCE_SWAP` (`1GiB`, `512MiB`, `0`) è provata a mano su Alpine. `DOCKER_SOURCE=distro` non riguarda Alpine (usa sempre i suoi pacchetti) e su Fedora installa `moby-engine` + `docker-compose`, che contiene il plugin `docker compose` (verificato sul pacchetto, non con il test completo).
 
 ### Immagini `jrei` (systemd/OpenRC) sul Docker delle istanze
 
@@ -335,14 +338,25 @@ Per ogni immagine e per ogni modo (senza e con `--privileged`) il test attende c
 
 tini è PID 1 (reaper, inoltra SIGTERM); l'entrypoint ne è l'unico figlio. Il daemon parte così:
 
-1. pulizia dello stato stantio **del container** (`/run/incus`, `/run/lxc`, mount lxcfs orfano);
+1. pulizia dello stato stantio **del container** (`/run/incus`, `/run/lxc`, il pidfile `/run/incus-env.pid`, mount lxcfs orfano);
 2. rientro come root con `flock` sul data-root (`/var/lib/incus/.incus-env.lock`, fd ereditato da `incusd`): due container sullo stesso volume → il secondo esce con **75**;
 3. **dopo** il lock, pulizia dei file stantii nel volume (`unix.socket`, `guestapi/sock`, `networks/*/dnsmasq.pid`, `forkdns.*`): senza pulizia, un `dnsmasq.pid` che dopo un hard stop nomina un pid *vivo* di un altro processo fa fallire il bridge;
-4. cgroup: remount rw di `/sys` e `/sys/fs/cgroup`, **tutti i processi in `/sys/fs/cgroup/init.scope`** e abilitazione di tutti i controller alla radice;
-5. nodi loop, `/etc/subuid`/`subgid` (`root:1000000:1000000000`), `mount --make-rshared /`, lxcfs;
-6. `incusd --group incus-admin`; l'entrypoint attende che l'API risponda *e* che sia il proprio `incusd`, poi applica preseed/configurazione.
+4. controllo del certificato del server: `incusd` genera `server.crt`/`server.key` al primo avvio e da lì in poi li carica senza rigenerarli, quindi una coppia vuota o troncata (corrente mancata durante quel primo avvio) faceva fallire ogni avvio successivo, un loop di restart. Ora una coppia che non si carica viene messa da parte (`*.incus-env-corrupt.<data>`) e `incusd` ne crea una nuova; i client remoti che si fidavano della vecchia (`incus remote add`, OpenTofu) devono riaccettarla;
+5. cgroup: remount rw di `/sys` e `/sys/fs/cgroup`, **tutti i processi in `/sys/fs/cgroup/init.scope`** e abilitazione di tutti i controller alla radice;
+6. nodi loop (tutti quelli dell'host più 32), `/etc/subuid`/`subgid` (`root:1000000:1000000000`), `mount --make-rshared /`, lxcfs. lxcfs parte staccato, così quando muore lo raccoglie tini (da figlio di `incusd` restava zombie e sembrava vivo), e con `oom_score_adj=-1000`: l'OOM killer sceglie un processo di un'istanza, non lui;
+7. `incusd --group incus-admin`, con il pid in `/run/incus-env.pid`; l'entrypoint attende che l'API risponda *e* che sia il proprio `incusd`, poi applica preseed/configurazione.
 
-Allo stop (`docker stop`, SIGTERM): **una** richiesta `incus admin shutdown --timeout N` (ferma le istanze, poi il daemon), SIGTERM diretto solo se l'API non risponde. Se `incusd` muore da solo il container esce con il suo stato (o 1): `restart: unless-stopped` lo rialza.
+Poi, ogni 5 s, la supervisione:
+
+- se all'avvio l'API non aveva risposto in tempo, applica la configurazione (preseed, indirizzi, certificati, proxy della UI) appena risponde: prima veniva saltata fino al riavvio successivo. Un errore nella configurazione o nel proxy non ferma più il container;
+- se lxcfs muore lo riavvia; se muore il proxy della UI lo riavvia, uccidendo prima il suo process group (il worker orfano tiene la porta 8080), mai un `nginx` qualsiasi: in un'istanza privilegiata i processi dell'uid 1000 sono dello stesso utente `alpine`. Al massimo 5 riavvii ciascuno, poi un warning e basta;
+- se `incusd` muore da solo il container esce con il suo stato (o 1): `restart: unless-stopped` lo rialza.
+
+Allo stop (`docker stop`, SIGTERM) c'è **una** richiesta `incus admin shutdown --force --timeout N` (N = `INCUS_ENV_SHUTDOWN_TIMEOUT`): Incus ferma le istanze in parallelo, tante alla volta quante le CPU, ciascuna entro il suo `boot.host_shutdown_timeout` (30 s di default, poi la uccide), e poi il daemon.
+
+- `--force` evita di aspettare le operazioni in corso. Senza, un'operazione che non si può annullare (un export, il download di un'immagine, un `incus stop` lungo) teneva ferme le istanze finché non finiva, fino a `core.shutdown_timeout` (5 minuti), ben oltre la grazia di Docker: misurati 59 s con un export, e con un'operazione più lunga SIGKILL a tutto.
+- Se l'API non risponde, l'entrypoint manda **SIGPWR** a `incusd`, che fa lo stesso shutdown completo. Non SIGTERM: per `incusd` è un reload, esce lasciando le istanze accese, che poi morivano con il container (misurati 120 s, exit 137, istanze uccise senza shutdown). Il segnale va al solo daemon, letto dal pidfile: `pidof incusd` trova anche i monitor LXC (`[lxc monitor]` ha lo stesso nome), che girano il segnale all'init dell'istanza.
+- Lo stop intero dura al massimo `INCUS_ENV_SHUTDOWN_TIMEOUT` + 10 s, sotto i 120 s di `stop_grace_period`.
 
 ### Note tecniche: perché `init.scope`
 
@@ -392,6 +406,15 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 38 | **Immagini jrei** (systemd Debian 12/13, Ubuntu 22.04/24.04/26.04, Fedora, CentOS 7/8, OpenRC Alpine) sul Docker di ogni template, con e senza `--privileged` | OK 80/90; i 10 restanti (CentOS 7, 2 modi × 5 template) sono attesi (systemd 219 su cgroup v2) e uguali su un host normale |
 | 31 | Compose con **bind mount** su ext4 (`INCUS_DATA`/`ALPINE_HOME`): primo avvio, `docker restart`, 3 crash, `down`/`up`, istanze Debian (nesting) e Alpine con limiti | OK: stato identico ai named volume, home seminata (dotfile di `alpine`), `memory.max` e rete intatti |
 | 30 | **OpenTofu** (provider `lxc/incus`) dal host contro la porta 8443 pubblicata: `apply` con token, istanza `tf1` con `limits.memory` creata e `RUNNING`; dopo un crash del container `plan` senza drift; `destroy` | OK |
+| 39 | `docker stop` mentre gira un'operazione che non si può annullare (`incus stop --timeout 300` su un'istanza che ignora SIGPWR) | OK: 6–7 s, exit 0, l'altra istanza fermata in ordine (prima della correzione: lo shutdown aspettava l'operazione, 59 s con un export) |
+| 40 | `docker stop` con l'API irraggiungibile per il client (`unix.socket` a `0600`) | OK: SIGPWR, 2–3 s, exit 0, istanza fermata in ordine (prima: SIGTERM, cioè reload, 120 s, exit 137, istanza uccisa) |
+| 41 | lxcfs ucciso con `kill -9` | riavviato entro 5 s, di nuovo con `oom_score_adj=-1000`; le istanze accese leggono *Socket not connected* da `/proc/meminfo` finché non si riavviano (v. *Limiti invalicabili*); dopo `incus restart` `MemTotal` torna al limite |
+| 42 | Proxy UI: master nginx ucciso con `kill -9` (il worker orfano tiene la porta) | riavviato, 8080 risponde 200; un altro processo `nginx` dello stesso utente resta vivo |
+| 43 | `server.key` vuoto (corrente mancata durante il primo avvio) | messo da parte, certificato nuovo, istanza di nuovo `RUNNING` (prima: loop di restart) |
+| 44 | `kill -9` del PID 1 del container dall'host con `restart: unless-stopped` (ora nello smoke test) | OK: Incus e istanza tornano su da soli |
+| 45 | `INCUS_ENV_SHUTDOWN_TIMEOUT` = `090`, `000`, `0`, `abc`, vuota | `090` → 90 s; gli altri → 100 s con un warning (prima `090`, letto come ottale, era un errore fatale a metà dello stop) |
+| 46 | `tests/smoke.incus.sh` con tutti i controlli nuovi | OK, 26/26 |
+| 47 | `tests/templates.sh` su tutti e cinque i template con gli script corretti, poi `TPL_ENV=DOCKER_SOURCE=distro` su Debian 13, Ubuntu 24.04 e 26.04 | OK: 80/80 e 48/48 |
 
 ### Bug trovati dai test (e corretti)
 
@@ -403,11 +426,39 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 6. **Ubuntu: `sudo` senza password.** L'immagine installa `/etc/sudoers.d/90-incus` con `NOPASSWD` per `ubuntu`: lo script lo toglie (ricompare solo con `USER_SUDO_NOPASSWD=true`).
 7. **Ubuntu: `ll` sovrascritto.** Il `~/.bashrc` di Ubuntu definisce `alias ll='ls -alF'` dopo `/etc/bash.bashrc`: gli script lo riscrivono in skel, nella home dell'utente e in quella di root.
 8. **Fedora: `LC_ALL` azzerato.** `/etc/profile.d/lang.sh` fa `unset LC_ALL` dopo il nostro file: il file è ora `zz-locale.sh` (e `zz-aliases.sh`, perché `colorls.sh` definisce un suo `ll`).
+9. **Stop bloccato da un'operazione in corso.** Senza `--force`, `incus admin shutdown` aspettava le operazioni non annullabili (export, download di immagini, stop lunghi) prima di fermare le istanze, fino a 5 minuti: oltre `stop_grace_period`, quindi SIGKILL a istanze e daemon. Ora `--force` (#39).
+10. **API irraggiungibile allo stop → SIGTERM.** Per `incusd` SIGTERM è un reload: usciva lasciando le istanze accese, il container arrivava alla fine della grazia e moriva con exit 137, istanze uccise senza shutdown. Ora SIGPWR, che è lo shutdown completo (#40).
+11. **`killall incusd` e `pidof incusd` colpivano anche i monitor LXC**, che si chiamano allo stesso modo e girano il segnale all'init dell'istanza. Ora il segnale va al pid scritto in `/run/incus-env.pid`.
+12. **`[alert] could not open error log file` di nginx a ogni avvio**: nginx apre il log compilato al suo interno prima di leggere la configurazione, e `alpine` non può scriverlo. Ora `-e stderr`.
+13. **lxcfs morto non veniva rilevato.** Era figlio di `incusd` (lanciato prima dell'`exec`), che non lo raccoglieva: restava zombie e `pidof` lo dava per vivo. Ora parte staccato, la supervisione lo riavvia ed è fuori dalla portata dell'OOM killer (#41).
+14. **Proxy UI morto non riavviato**, con il worker orfano che teneva la porta. Ora riavviato uccidendo il suo solo process group (#42).
+15. **Certificato del server troncato → loop di restart** (#43).
+16. **Nodi loop**: erano 16 fissi con minor = indice. Su un host con più loop device (snap) `losetup` sceglieva un indice senza nodo e falliva, e con `max_part` i minor erano sbagliati.
+17. **Configurazione saltata** se l'API non rispondeva entro l'attesa iniziale (fino al riavvio successivo), e un errore nella configurazione o nel proxy poteva terminare l'entrypoint (`set -e`), quindi il container.
+18. **`INCUS_ENV_SHUTDOWN_TIMEOUT` documentata ma non passata dal compose** (impostarla in `.env` non aveva effetto), e `090` letto come ottale (#45). Ora è nel compose, insieme a `INCUS_STOP_GRACE_PERIOD`.
+19. **Template.** `DOCKER_SOURCE=distro` (che è anche il ripiego quando il repository ufficiale non risponde) non funzionava su Ubuntu 24.04: lì `docker-compose` è la v1 in Python, senza il plugin `docker compose`, e lo script falliva alla fine. Ora gli script Ubuntu installano `docker-compose-v2` (su 26.04 `docker-compose` era già un alias di quel pacchetto). La riga finale riportava più indirizzi se un'altra istanza aveva un nome che inizia allo stesso modo (`incus list web` trova anche `web2`). Su Fedora un `LOCALE` diverso da `it_*` non installava il langpack giusto. `INSTANCE_SWAP=08GiB` veniva letto come ottale, e se `downloads.rclone.org` non rispondeva lo script si fermava senza dire perché.
 
 ### Cosa NON è stato provato
 
 - Riavvio del demone Docker dell'host (avrebbe fermato gli altri container della macchina): il percorso è lo stesso del crash (#4), perché dopo il reboot Docker rialza il container con `unless-stopped`. Provato invece il `kill -9` del processo principale, che dall'host equivale a un crash/OOM.
 - `docker kill` come *crash*: Docker lo tratta come stop manuale (v. #3).
+- Spegnimento reale dell'host o della VM: coperto dai due casi che lo compongono, `docker stop` (shutdown ordinato) e `kill -9` del PID 1 (crash), ma il tempo concesso allo stop lo decide il `TimeoutStopSec` di `docker.service` (v. *Limiti invalicabili*). Un OOM reale di lxcfs non è stato provocato: è verificato `oom_score_adj=-1000`.
 - arm64, `privileged: true` come variante di compose, `linux.kernel_modules`, VM, ZFS, pool Ceph.
 - `tests/templates.sh` non è nella pipeline di release (serve internet, immagini delle istanze, Docker Hub): si lancia a mano. Lo smoke test (`tests/smoke.incus.sh`) invece sì, su ogni digest prima dei tag.
 - Template su arm64 (le immagini jrei in lista sono quasi tutte solo amd64).
+
+## Limiti invalicabili
+
+Cose che il container non può risolvere da solo: si gestiscono fuori (host, VM, istanze) oppure si accettano. Valgono anche quelle della variante Docker in [README.md](README.md#limiti-invalicabili), in particolare il `TimeoutStopSec` di `docker.service` allo spegnimento dell'host.
+
+- **Caduta di corrente, spegnimento brutale della VM, kernel panic.** Nessuno shutdown è possibile: istanze e daemon muoiono di colpo. Al riavvio container e istanze (`boot.autostart`) tornano su da soli e lo stato stantio viene ripulito (provato: `kill -9` del PID 1 dall'host, `docker kill` con file stantii piazzati, `incusd` ucciso), ma ciò che non era sul disco è perso: l'integrità dei dati delle istanze dipende dal loro `fsync` e da uno storage che rispetti i flush. Un database di Incus danneggiato (`/var/lib/incus/database`) va recuperato a mano; `incus admin recover` reimporta le istanze che sono ancora nei pool.
+- **Budget di tempo allo stop.** `INCUS_STOP_GRACE_PERIOD` (120 s) > `INCUS_ENV_SHUTDOWN_TIMEOUT` (100 s) + 10 s, e `INCUS_ENV_SHUTDOWN_TIMEOUT` ≥ (istanze ÷ CPU, per eccesso) × `boot.host_shutdown_timeout` (30 s). Un'istanza che non reagisce a SIGPWR (un init che non gestisce lo spegnimento) viene uccisa allo scadere del suo `boot.host_shutdown_timeout`; se i conti non tornano, Docker uccide tutto allo scadere della grazia e al riavvio si riparte come dopo un crash. Sopra a tutto c'è il `TimeoutStopSec` di `docker.service` quando si spegne l'host.
+- **Se `incusd` muore, muoiono le istanze.** Il container esce e viene riavviato, le istanze vengono uccise senza shutdown e ripartono con `boot.autostart`. Non c'è un equivalente del `live-restore`.
+- **Se lxcfs muore, le istanze accese restano senza le sue viste finché non si riavviano.** `/proc/meminfo`, `/proc/cpuinfo`, `/proc/stat`, `/proc/uptime`, `/proc/swaps` ecc. sono bind mount del filesystem FUSE di lxcfs: morto il processo, il kernel chiude la connessione e quei file danno *Socket not connected* (misurato: `free` fallisce). L'entrypoint riavvia lxcfs subito e lo protegge dall'OOM killer, ma un nuovo lxcfs non si può riagganciare alle istanze già accese: va fatto `incus restart NOME` (le istanze avviate dopo vedono il nuovo lxcfs). Il log lo segnala: `lxcfs exited, restarting it`.
+- **`docker kill` e `docker stop` sono stop manuali**: `restart: unless-stopped` non rialza il container, nemmeno dopo un reboot, finché non si lancia `docker start` o `docker compose up -d`. Un crash vero (OOM, `kill -9`, caduta di corrente) invece sì.
+- **Certificato del server rigenerato** (dopo una coppia corrotta): cambia l'impronta, quindi i client remoti e OpenTofu devono riaccettarlo (`accept_remote_certificate` o `incus remote add` di nuovo).
+- **Loop device e device-mapper sono dell'host.** I nodi `loopN` vengono creati all'avvio per i loop esistenti più 32: se l'host ne crea molti altri dopo, quelli oltre non sono usabili fino al riavvio del container. I volumi LVM sono device-mapper dell'host e dopo un crash restano attivi sull'host; un loop device lasciato attaccato (`losetup -a` sull'host) si stacca solo dall'host. Per la resilienza conviene il pool `dir` (default) o `btrfs`.
+- **Niente VM** (`/dev/kvm` assente), niente ZFS, LVM thin pool solo se il kernel dell'host ha il target `thin-pool`.
+- **Requisiti dell'host**: cgroup v2, `/dev/fuse` (senza, le istanze vedono la memoria e le CPU dell'host), kernel e moduli dell'host (le istanze non ne hanno di propri: `sysctl` e moduli sono quelli dell'host).
+- **Capability**: un'istanza non ne ha mai più del container esterno (`cap_add: ALL` è il tetto).
+- **Sicurezza**: l'API (8443) e il proxy della UI (8080) equivalgono a root sull'host delle istanze; la basic auth del proxy passa in chiaro su HTTP.

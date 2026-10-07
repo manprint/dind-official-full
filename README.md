@@ -106,7 +106,7 @@ Un dotfile in `/home/alpine` senza il marker `dind-env-` (per esempio in una hom
 | `DOCKER_DATA` | `./data/docker` | solo bind: data-root di `dockerd` |
 | `ALPINE_HOME` | `./data/alpine-home` | solo bind: home di `alpine` |
 
-Senza `DIND_DNS` i container interni sulla bridge di default ripiegano su `8.8.8.8`/`8.8.4.4`: in reti che li bloccano, impostare i DNS aziendali. Le voci che non sono indirizzi IP vengono scartate con un warning, perché `dockerd` rifiuterebbe di partire.
+Senza `DIND_DNS` i container interni sulla bridge di default ripiegano su `8.8.8.8`/`8.8.4.4`: in reti che li bloccano, impostare i DNS aziendali. Le voci che non sono indirizzi IP vengono scartate con un warning, perché `dockerd` rifiuterebbe di partire. Il controllo segue le regole di `dockerd`: IPv4 a quattro ottetti senza zeri iniziali, IPv6 con gruppi di 1–4 cifre esadecimali e al massimo un `::` (`2001:db8::1::2` viene scartato: prima passava e `dockerd` non partiva). Gli IPv6 con zona (`fe80::1%eth0`) sono scartati anche se `dockerd` li accetterebbe: la zona nomina un'interfaccia del daemon, non dei container che userebbero quel DNS.
 
 `DOCKER_DAEMON_INTERNAL_BIP` è un CIDR IPv4 con prefisso da `/8` a `/29` e diventa `--bip` di `dockerd`. Un indirizzo di rete (`10.10.100.0/24`) viene convertito nel primo host: la bridge prende `10.10.100.1/24` e i container interni da `.2` in poi. Un valore non valido viene scartato con un warning. Vale solo per la bridge di default: le reti definite dall'utente (compose incluso) usano ancora i pool di `dockerd`. Non combinarla con `--bip` nel `command:` né con `bip` in `/etc/docker/daemon.json`: `dockerd` rifiuta l'opzione data due volte (l'argomento esplicito prevale e la variabile viene ignorata con un warning). Cambiare la subnet con container interni già creati richiede di ricrearli, perché tengono l'indirizzo vecchio.
 
@@ -144,6 +144,9 @@ Pensato per staging che deve ripartire da solo dopo reboot, crash o spegnimento 
 - All'avvio lo stato runtime rimasto da uno stop non pulito (`/run/docker`, pidfile, socket) viene ripulito: senza, dopo un `kill` o una caduta di corrente `dockerd` spesso non ripartiva.
 - `docker stop` è pulito: `dockerd` riceve un solo SIGTERM e ferma i container interni prima di uscire (`stop_grace_period: 60s`).
 - Se `dockerd` muore da solo il container esce con codice diverso da 0 e viene riavviato; l'healthcheck (`docker version`) lo segna `unhealthy` se il daemon non risponde.
+- Una chiave TLS (`/certs/{ca,server,client}/key.pem`) vuota a metà o corrotta, per esempio da un disco pieno o da una caduta di corrente durante il primo avvio, viene messa da parte (`key.pem.dind-env-corrupt.<data>`) e rigenerata con i certificati. Prima ogni avvio falliva in `openssl` e il container restava in un loop di restart da cui nessuna restart policy lo tirava fuori.
+
+Provato dallo smoke test (v. [Test](#test)): `kill -9` del PID 1 del container dall'host (come un crash o un OOM) con la restart policy attiva, 3 cicli di `docker kill`/`docker start` con lo stato stantio lasciato sul posto, crash di `dockerd`, doppio SIGTERM, chiave TLS corrotta, ricreazione del container sugli stessi volumi: ogni volta daemon e container interni tornano su da soli.
 
 Da fare sull'host e nei progetti interni:
 
@@ -158,7 +161,32 @@ Da fare sull'host e nei progetti interni:
 
   Rovescio della medaglia: se il disco non si monta, sull'host non parte nessun container;
 
-- con una VM, la cache del disco virtuale deve rispettare i flush (es. niente `cache=unsafe` in QEMU/Proxmox): altrimenti una caduta di corrente può corrompere `/var/lib/docker` qualunque cosa faccia il container.
+- con una VM, la cache del disco virtuale deve rispettare i flush (es. niente `cache=unsafe` in QEMU/Proxmox): altrimenti una caduta di corrente può corrompere `/var/lib/docker` qualunque cosa faccia il container;
+- lo spegnimento dell'host deve lasciare a Docker il tempo di fermare i container (v. sotto, *Limiti invalicabili*).
+
+## Limiti invalicabili
+
+Cose che il container non può risolvere da solo: si gestiscono fuori (host, VM, applicazioni) oppure si accettano.
+
+- **Caduta di corrente, spegnimento brutale della VM, kernel panic dell'host.** Nessuno stop ordinato è possibile: `dockerd` e i container interni muoiono di colpo. Al riavvio il container riparte e ripulisce lo stato stantio da solo (provato), ma ciò che non era ancora sul disco è perso, e l'integrità dei dati dei container interni (database e simili) dipende dal loro uso di `fsync` e da uno storage che rispetti i flush. Se a corrompersi è un database di metadati di Docker (raro: i file boltdb sotto `/var/lib/docker`, es. `network/files/local-kv.db`), `dockerd` non parte e il container resta in restart: il file indicato nel log (`docker logs`) va rimosso o ripristinato a mano, a container fermo.
+- **Spegnimento ordinato dell'host: il tempo lo decide systemd.** Allo shutdown systemd ferma `docker.service` e, passato il suo `TimeoutStopSec`, lo uccide. Il default è 90 s, ma alcune macchine lo abbassano: sull'host dei test `DefaultTimeoutStopSec` è 10 s. Se è sotto lo `stop_grace_period` (60 s qui, 120 s per Incus) lo stop pulito viene troncato e il riavvio procede come dopo un crash. Da controllare e, se serve, alzare:
+
+  ```bash
+  systemctl show docker -p TimeoutStopUSec
+  sudo systemctl edit docker
+  ```
+
+  ```ini
+  [Service]
+  TimeoutStopSec=180
+  ```
+
+- **`docker kill` e `docker stop` sono stop manuali**: con `unless-stopped` il container resta fermo, anche dopo un reboot dell'host, finché non si lancia `docker start` o `docker compose up -d`. Un crash vero (OOM, `kill -9` del processo, caduta di corrente) invece viene rialzato.
+- **Se `dockerd` interno muore, muoiono i container interni.** Il container esce e viene riavviato; i container interni ripartono solo se hanno una restart policy. Non esiste `live-restore`: il daemon vive nel container stesso.
+- **Timeout dei container interni.** Allo stop `dockerd` ferma i container interni, ciascuno con il suo timeout (10 s di default). Uno con `--stop-timeout`/`stop_grace_period` vicino o oltre i 60 s del container esterno riceve SIGKILL quando scade la grazia esterna: tenere i timeout interni sotto i 50 s, oppure alzare `stop_grace_period` (e il `TimeoutStopSec` dell'host).
+- **Filesystem di `DOCKER_DATA`**: deve poter fare da base a overlayfs (ext4, xfs con `ftype=1`, btrfs). NFS, CIFS, FUSE o un altro overlay non sono supportati. I named volume stanno nel `/var/lib/docker` dell'host e vanno bene.
+- **Un solo `dockerd` per data-root** (v. [Lock sul data-root](#lock-sul-data-root)): un secondo container sugli stessi dati resta fuori finché il primo non si ferma.
+- **Sicurezza**: `privileged: true` è obbligatorio per DinD e non è un confine di sicurezza (v. Note).
 
 ## Test
 
@@ -167,7 +195,7 @@ docker build -t dind-test .
 tests/smoke.sh dind-test 3
 ```
 
-Avvio, DNS, lock, `docker stop`, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
+Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate a `dockerd`), `DOCKER_DAEMON_INTERNAL_BIP`, dotfile, `HOME` e prompt, lock sul data-root, `docker stop`, chiave TLS corrotta, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`, `kill -9` del PID 1 dall'host con la restart policy, ricreazione del container sugli stessi volumi. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
 
 ## Note
 

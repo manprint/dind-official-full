@@ -59,13 +59,28 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: shellcheck
-        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh
+        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh tests/terraform.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh scripts/terraform/guest/*.sh
 
       - name: Compose files
         run: |
           for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml docker-compose.incus.yml; do
             docker compose -f "$f" config -q
           done
+
+      # The OpenTofu release the Incus image ships, for the template's checks.
+      - name: OpenTofu version
+        id: tofu
+        run: echo "version=$(sed -n 's/^ARG OPENTOFU_VERSION=//p' Dockerfile.incus)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ steps.tofu.outputs.version }}
+          tofu_wrapper: false
+
+      # In step with the bash templates, fmt, validate and the unit tests.
+      - name: OpenTofu template
+        run: tests/terraform.sh
 
   build:
     name: build-${{ matrix.variant }}-${{ matrix.arch }}

@@ -76,6 +76,14 @@ smoke-incus tag="latest" cycles="3":
 templates-incus tag="latest" *templates:
     tests/templates.sh {{ image_incus }}:{{ tag }} {{ templates }}
 
+# Same, instances created by the OpenTofu template (scripts/terraform)
+templates-incus-tofu tag="latest" *templates:
+    MODE=tofu tests/templates.sh {{ image_incus }}:{{ tag }} {{ templates }}
+
+# OpenTofu template: in step with the bash templates, fmt, validate, unit tests (needs tofu; --fix rewrites guest/*.sh and tests/terraform.tfvars; TOFU=terraform for HashiCorp Terraform)
+test-terraform *args:
+    tests/terraform.sh {{ args }}
+
 # Print the image names the build recipes use
 names:
     @echo "full:    {{ image_full }}"

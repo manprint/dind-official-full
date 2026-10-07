@@ -12,7 +12,11 @@
 # does not answer), CYCLES hard kills with stale runtime files planted in the data
 # directory, lxcfs and the web UI proxy dying, a server certificate cut short, an
 # incusd crash, a double SIGTERM and a crash of the whole container brought back
-# by the restart policy. Needs a Docker host that allows --cap-add ALL with
+# by the restart policy. The OpenTofu template of /opt/incus-template/terraform
+# too: init from the image's provider mirror, its unit tests, an instance from
+# terraform.tfvars and TF_VAR_*, an in-place change, a failed provisioning, a
+# second state on the same name, and its state still matching the instance after
+# all the stops and crashes. Needs a Docker host that allows --cap-add ALL with
 # systempaths=unconfined, cgroup v2, /dev/fuse and --privileged (the crash is a
 # SIGKILL sent to the container's PID 1 from the host PID namespace); no
 # registry access, the instance image is built from the container's own
@@ -106,13 +110,25 @@ stop_in_order() {
 }
 
 wait_instance() {
+	local name="${1:-smk}"
 	for _ in $(seq 1 60); do
-		if [ "$(in_main incus list smk -c s -f csv 2>/dev/null)" = RUNNING ]; then
+		if [ "$(in_main incus list "^$name\$" -c s -f csv 2>/dev/null)" = RUNNING ]; then
 			return 0
 		fi
 		sleep 1
 	done
-	fail "instance smk is not RUNNING (state: $(in_main incus list smk -c s -f csv 2>&1))"
+	fail "instance $name is not RUNNING (state: $(in_main incus list "^$name\$" -c s -f csv 2>&1))"
+}
+
+# OpenTofu in ~/DIR of the main container, as alpine, on the local image:
+#   tf_run DIR [NAME=VALUE...] tofu ARGS...
+# provision = false: the guest scripts need a distribution and the network.
+TF_ENV=(-e TF_INPUT=0 -e TF_IN_AUTOMATION=1 -e TF_VAR_instance_image=smoke -e TF_VAR_provision=false
+	-e TF_VAR_wait_network_seconds=0 -e TF_VAR_instance_cpu=1 -e TF_VAR_instance_swap=32MiB)
+tf_run() {
+	local dir="$1"
+	shift
+	docker exec "${TF_ENV[@]}" -w "/home/alpine/$dir" "$MAIN" env "$@"
 }
 
 # Same checks after every start: the API, the instance and its memory limit.
@@ -182,7 +198,7 @@ in_main sh -c '
 	mkdir -p "$d/rootfs/bin" "$d/rootfs/sbin" "$d/rootfs/etc" "$d/rootfs/lib" "$d/rootfs/proc" "$d/rootfs/sys" "$d/rootfs/dev" "$d/rootfs/tmp" "$d/rootfs/root" "$d/rootfs/run" "$d/rootfs/mnt"
 	cp /bin/busybox "$d/rootfs/bin/busybox"
 	cp /lib/ld-musl-*.so.1 "$d/rootfs/lib/"
-	for a in sh cat sleep mount ls grep id date tr cut true rm touch; do ln -s busybox "$d/rootfs/bin/$a"; done
+	for a in sh cat sleep mount ls grep id date tr cut true rm touch test; do ln -s busybox "$d/rootfs/bin/$a"; done
 	install -m 0755 /tmp/smoke-init "$d/rootfs/sbin/init"
 	rm -f /tmp/smoke-init
 	printf "architecture: %s\ncreation_date: %s\nproperties:\n  description: smoke\n  os: smoke\n" "$(uname -m)" "$(date +%s)" >"$d/metadata.yaml"
@@ -217,6 +233,83 @@ in_main incus config unset smk raw.lxc
 in_main incus restart smk
 wait_instance
 ok "lxc.cap.keep narrows the capability set"
+
+# The template is used from a copy in the home, as documented: its state then
+# lives next to the instance's data, outside the container.
+in_main tofu version | grep -q '^OpenTofu v' || fail "tofu is not in the image"
+in_main cp -r /opt/incus-template/terraform /home/alpine/tf
+tf_run tf tofu init -no-color >/dev/null || fail "tofu init"
+in_main find /home/alpine/tf/.terraform/providers -type l -exec readlink {} + | grep -q '^/usr/share/terraform/plugins/' ||
+	fail "tofu init did not take the provider from the image's mirror"
+ok "OpenTofu: init takes the provider from the image, no registry"
+
+out="$(tf_run tf tofu test -no-color 2>&1)" || fail "tofu test: $out"
+ok "OpenTofu: the template's unit tests pass in the image ($(tail -1 <<<"$out"))"
+
+out="$(docker exec "${TF_ENV[@]}" -e TF_DATA_DIR=/tmp/tf-guard -e TF_VAR_instance_name=guard "$MAIN" sh -c \
+	'tofu -chdir=/opt/incus-template/terraform init -no-color >/dev/null && tofu -chdir=/opt/incus-template/terraform plan -no-color' 2>&1)" &&
+	fail "tofu plan ran in /opt/incus-template, where its state would be lost with the container"
+grep -q 'Copy the template under your home first' <<<"$out" || fail "the /opt/incus-template guard did not say why: $out"
+[ -z "$(in_main incus list '^guard$' -c n -f csv)" ] || fail "the /opt/incus-template guard let an instance through"
+ok "OpenTofu: refuses to run from /opt/incus-template"
+
+# Settings from terraform.tfvars (name, memory, address) and from TF_VAR_* (the
+# rest); the fixed address is set on the eth0 the default profile defines.
+bridge="$(in_main incus network get incusbr0 ipv4.address)"
+ip4="${bridge%.*}.50"
+printf 'instance_name   = "tf"\ninstance_memory = "64MiB"\ninstance_ipv4   = "%s"\n' "$ip4" |
+	docker exec -i "$MAIN" sh -c 'cat >/home/alpine/tf/terraform.tfvars'
+out="$(tf_run tf tofu apply -auto-approve -no-color 2>&1)" || fail "tofu apply: $out"
+[ "$(in_main incus config get tf limits.memory)" = 64MiB ] || fail "tofu: limits.memory from terraform.tfvars not applied"
+[ "$(in_main incus exec tf -- cat /sys/fs/cgroup/memory.max)" = 67108864 ] || fail "tofu: memory limit not enforced"
+[ "$(in_main incus exec tf -- cat /sys/fs/cgroup/memory.swap.max)" = 33554432 ] || fail "tofu: instance_swap from TF_VAR_ not enforced"
+[ "$(in_main incus config get tf security.nesting)" = true ] || fail "tofu: security.nesting not set"
+[ "$(in_main incus config device get tf eth0 network)" = incusbr0 ] || fail "tofu: eth0 not taken from the profile"
+[ "$(in_main incus config device get tf eth0 ipv4.address)" = "$ip4" ] || fail "tofu: instance_ipv4 not set on eth0"
+[ "$(tf_run tf tofu output -raw name)" = tf ] || fail "tofu output name"
+tf_run tf tofu plan -detailed-exitcode -no-color >/dev/null || fail "tofu: the plan right after the apply is not empty"
+ok "OpenTofu: instance from terraform.tfvars and TF_VAR_* (limits, swap, the profile's eth0 with a fixed address), empty plan after it"
+
+# Memory and swap changed on the running instance: in place, the memory limit
+# at once, the swap (raw.lxc) from the instance's next start. terraform.tfvars
+# wins over TF_ENV's TF_VAR_instance_swap.
+in_main incus exec tf -- touch /root/keep
+in_main sed -i 's/^instance_memory = .*/instance_memory = "96MiB"/' /home/alpine/tf/terraform.tfvars
+in_main sh -c 'echo "instance_swap   = \"48MiB\"" >>/home/alpine/tf/terraform.tfvars'
+out="$(tf_run tf tofu apply -auto-approve -no-color 2>&1)" || fail "tofu apply of a memory and swap change: $out"
+grep -q '0 added, 1 changed, 0 destroyed' <<<"$out" || fail "tofu: a memory and swap change must be applied in place ($(grep -E '^(Plan|Apply)' <<<"$out"))"
+[ "$(in_main incus exec tf -- cat /sys/fs/cgroup/memory.max)" = 100663296 ] || fail "tofu: the new memory limit is not live"
+in_main incus exec tf -- test -e /root/keep || fail "tofu: a memory change replaced the instance"
+in_main incus restart tf
+wait_instance tf
+[ "$(in_main incus exec tf -- cat /sys/fs/cgroup/memory.swap.max)" = 50331648 ] || fail "tofu: the new swap size is not in force after a restart of the instance"
+in_main incus exec tf -- test -e /root/keep || fail "tofu: tf lost its data at its restart"
+tf_run tf tofu plan -detailed-exitcode -no-color >/dev/null || fail "tofu: the plan after the restart of the instance is not empty"
+ok "OpenTofu: memory changed in place on the running instance, swap from its restart"
+
+# A provisioning that fails (alpine's script on the busybox image: no apk) fails
+# the apply with the script's output and leaves the instance tainted, so the
+# next apply replaces it.
+in_main cp -r /opt/incus-template/terraform /home/alpine/tf-bad
+tf_run tf-bad tofu init -no-color >/dev/null || fail "tofu init (tf-bad)"
+out="$(tf_run tf-bad TF_VAR_instance_name=tf-bad TF_VAR_distro=alpine TF_VAR_provision=true tofu apply -auto-approve -no-color 2>&1)" &&
+	fail "tofu: a failed provisioning did not fail the apply"
+grep -q 'apk: not found' <<<"$out" || fail "tofu: the provisioning error does not carry the script's output: $out"
+tf_run tf-bad TF_VAR_instance_name=tf-bad TF_VAR_distro=alpine TF_VAR_provision=true tofu plan -no-color 2>&1 |
+	grep -q 'is tainted, so it must be replaced' || fail "tofu: the instance of a failed provisioning is not marked for replacement"
+tf_run tf-bad TF_VAR_instance_name=tf-bad TF_VAR_distro=alpine tofu destroy -auto-approve -no-color >/dev/null || fail "tofu destroy (tf-bad)"
+[ -z "$(in_main incus list '^tf-bad$' -c n -f csv)" ] || fail "tofu destroy left tf-bad behind"
+ok "OpenTofu: a failed provisioning fails the apply with the script's output, the instance tainted"
+
+# A second state on the same name must not take tf over, nor delete it.
+in_main cp -r /opt/incus-template/terraform /home/alpine/tf-dup
+tf_run tf-dup tofu init -no-color >/dev/null || fail "tofu init (tf-dup)"
+out="$(tf_run tf-dup TF_VAR_instance_name=tf tofu apply -auto-approve -no-color 2>&1)" &&
+	fail "tofu: a second state created an instance named tf"
+grep -q 'already exists' <<<"$out" || fail "tofu: a second state on the same name did not say why: $out"
+tf_run tf-dup TF_VAR_instance_name=tf tofu destroy -auto-approve -no-color >/dev/null || fail "tofu destroy (tf-dup)"
+in_main incus exec tf -- test -e /root/keep || fail "tofu: a second state on the same name touched tf"
+ok "OpenTofu: a second state on the same name is refused and leaves the instance alone"
 
 docker run -d --name "$SECOND" "${RUN_FLAGS[@]}" "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do
@@ -387,5 +480,14 @@ done
 check_state "after a crash of the container"
 docker update --restart no "$MAIN" >/dev/null
 ok "PID 1 SIGKILLed from the host: restart policy brings incus and the instance back"
+
+# tf went through every stop and crash above with its state in the home: the
+# state still matches it, and destroy removes it.
+wait_instance tf
+in_main incus exec tf -- test -e /root/keep || fail "tofu: tf lost its data"
+tf_run tf tofu plan -detailed-exitcode -no-color >/dev/null || fail "tofu: the state no longer matches tf after the restarts"
+tf_run tf tofu destroy -auto-approve -no-color >/dev/null || fail "tofu destroy"
+[ -z "$(in_main incus list '^tf$' -c n -f csv)" ] || fail "tofu destroy left tf behind"
+ok "OpenTofu: after the stops and crashes the state still matches the instance; destroy removes it"
 
 echo "all checks passed"

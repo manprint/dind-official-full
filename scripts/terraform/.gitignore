@@ -1,0 +1,11 @@
+# For a copy of this template kept in git: the state and the variables hold
+# the user's password.
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfvars
+# the defaults the unit tests run with, not a configuration
+!tests/terraform.tfvars
+crash.log
+crash.*.log

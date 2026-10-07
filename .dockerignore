@@ -13,3 +13,11 @@
 !scripts/create_incus_ubuntu2404.sh
 !scripts/create_incus_ubuntu2604.sh
 !scripts/create_incus_fedora.sh
+!scripts/terraform
+scripts/terraform/.terraform
+scripts/terraform/**/*.tfstate
+scripts/terraform/**/*.tfstate.*
+scripts/terraform/**/*.tfvars
+!scripts/terraform/tests/terraform.tfvars
+scripts/terraform/.terraform.tfstate.lock.info
+scripts/terraform/crash*.log

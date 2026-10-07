@@ -67,6 +67,43 @@ RUN set -eux; \
 	yarn run build; \
 	test -f build/ui/index.html
 
+# OpenTofu, for the instance templates in /opt/incus-template/terraform. The
+# release archive is checked against SHA256SUMS, and SHA256SUMS against its
+# signature by the OpenTofu signing key, pinned by fingerprint.
+FROM alpine:${ALPINE_VERSION} AS tofu
+ARG OPENTOFU_VERSION=1.13.1
+ARG OPENTOFU_GPG_FINGERPRINT=E3E6E43D84CB852EADB0051D0C0AF313E5FD9F80
+RUN apk add --no-cache ca-certificates gnupg
+WORKDIR /src
+RUN set -eux; \
+	case "$(apk --print-arch)" in \
+		x86_64) arch=amd64 ;; \
+		aarch64) arch=arm64 ;; \
+		*) echo >&2 "unsupported arch for OpenTofu: $(apk --print-arch)"; exit 1 ;; \
+	esac; \
+	base="https://github.com/opentofu/opentofu/releases/download/v${OPENTOFU_VERSION}"; \
+	archive="tofu_${OPENTOFU_VERSION}_linux_${arch}.tar.gz"; \
+	wget -qO "$archive" "$base/$archive"; \
+	wget -qO SHA256SUMS "$base/tofu_${OPENTOFU_VERSION}_SHA256SUMS"; \
+	wget -qO SHA256SUMS.gpgsig "$base/tofu_${OPENTOFU_VERSION}_SHA256SUMS.gpgsig"; \
+	wget -qO opentofu.asc https://get.opentofu.org/opentofu.asc; \
+	export GNUPGHOME="$(mktemp -d)"; \
+	gpg --batch --quiet --import opentofu.asc; \
+	gpg --batch --export "$OPENTOFU_GPG_FINGERPRINT" > tofu.gpg; \
+	test -s tofu.gpg; \
+	gpgv --keyring ./tofu.gpg SHA256SUMS.gpgsig SHA256SUMS; \
+	grep " ${archive}\$" SHA256SUMS | sha256sum -c -; \
+	mkdir -p /out/plugins; \
+	tar -xzf "$archive" -C /out tofu; \
+	/out/tofu version
+# The template's provider, at the version and with the checksums of its lock
+# file, unpacked the way an implicit local mirror expects it: `tofu init` takes
+# it from there (a symlink, no copy), offline, instead of from the registry.
+COPY scripts/terraform/versions.tf scripts/terraform/.terraform.lock.hcl /src/template/
+RUN set -eux; \
+	TF_PLUGIN_CACHE_DIR=/out/plugins /out/tofu -chdir=/src/template init -backend=false -input=false -lockfile=readonly -no-color; \
+	find /out/plugins -type f -name 'terraform-provider-*' | grep .
+
 FROM alpine:${ALPINE_VERSION}
 
 # "current" resolves to the newest rclone at build time; CI resolves it once
@@ -205,6 +242,11 @@ RUN set -eux; \
 COPY --from=build /out/incusd /usr/sbin/incusd
 COPY --from=build /out/incus /out/fuidshift /usr/bin/
 COPY --from=ui /src/build/ui /opt/incus/ui
+COPY --from=tofu /out/tofu /usr/local/bin/tofu
+# One of the directories OpenTofu scans as an implicit provider mirror (XDG data
+# dir, "terraform" for compatibility); what it finds there is not looked up in
+# the registry.
+COPY --from=tofu /out/plugins /usr/share/terraform/plugins
 
 # Fails the build when a library the daemon links against is missing.
 RUN set -eux; \
@@ -213,7 +255,9 @@ RUN set -eux; \
 	! ldd /usr/sbin/incusd | grep -i "not found"; \
 	lxc-start --version; \
 	lxcfs --version; \
-	dnsmasq --version | head -1
+	dnsmasq --version | head -1; \
+	tofu version; \
+	printf 'complete -C /usr/local/bin/tofu tofu\n' > /usr/share/bash-completion/completions/tofu
 
 COPY bashrc /etc/skel/.bashrc
 COPY bash_aliases /etc/skel/.bash_aliases
@@ -232,10 +276,13 @@ RUN set -eux; \
 
 # Templates that create and provision an Alpine / Debian 13 / Ubuntu 24.04 / Ubuntu 26.04 / Fedora Incus container;
 # copy them where an incus client runs and launch them (see README_INCUS.md).
+# terraform/ is the same template as an OpenTofu/Terraform configuration, to be
+# copied under the home before use so that its state survives the container.
 COPY --chown=alpine:alpine --chmod=0755 \
 	scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh \
 	scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh \
 	/opt/incus-template/
+COPY --chown=alpine:alpine scripts/terraform /opt/incus-template/terraform
 
 COPY entrypoint.incus.sh /usr/local/bin/dev-entrypoint-incus.sh
 RUN chmod +x /usr/local/bin/dev-entrypoint-incus.sh

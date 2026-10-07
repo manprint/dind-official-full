@@ -1,0 +1,70 @@
+# cp terraform.tfvars.example terraform.tfvars, then uncomment what you change.
+# Every value below is the default. The same settings can be given as
+# TF_VAR_<name> in the environment (TF_VAR_instance_memory=4GiB) or with
+# -var name=value; terraform.tfvars wins over TF_VAR_, -var wins over both.
+
+# distro = "debian13" # alpine, debian13, ubuntu2404, ubuntu2604, fedora
+
+# ---- instance (changed in place) ---------------------------------------------
+
+# remote            = ""          # incus remote (incus remote list); "" = the default one
+# project           = ""
+# instance_name     = ""          # "" = <distro>-dev
+# instance_image    = ""          # "" = images:debian/13, images:alpine/3.24, ...
+# instance_profiles = ["default"]
+
+# instance_storage_pool = ""      # "" = the profile's root disk
+# instance_disk_size    = ""      # e.g. "20GiB" (btrfs, lvm or zfs pool)
+# instance_network      = ""      # managed network of eth0; "" = the profile's
+# instance_ipv4         = ""      # e.g. "10.10.200.50"; "" = DHCP
+
+# instance_memory = "2GiB"        # "" = no limit
+# instance_cpu    = "2"           # "" = no limit
+# instance_swap   = ""            # e.g. "1GiB"; "0" = none; "" = Incus default (none)
+
+# instance_nesting    = true      # Docker in the instance
+# instance_intercept  = true      # mknod/setxattr/sysinfo interception
+# instance_privileged = false
+# instance_autostart  = true
+
+# instance_ssh_publish_port = 2222 # ssh also on this port of the incus host
+
+# instance_config = {
+#   "limits.processes" = "500"
+# }
+
+# instance_devices = {
+#   data = { type = "disk", properties = { source = "/srv/data", path = "/data" } }
+# }
+
+# wait_network_seconds = 90       # 0 = do not wait for the mirror
+
+# ---- guest (used at creation: changing one replaces the instance) -------------
+
+# provision         = true        # false = the bare image
+# provision_timeout = "30m"
+
+# user_name          = ""         # "" = alpine, debian, ubuntu or fedora
+# user_uid           = 1000
+# user_password      = "password"
+# user_shell         = "/bin/bash"
+# user_sudo          = true
+# user_sudo_nopasswd = false
+
+# timezone = "Europe/Rome"
+# locale   = "it_IT.UTF-8"
+# keymap   = "it"
+
+# ssh_password_auth = "yes"
+# ssh_permit_root   = "no"        # yes, no, prohibit-password
+
+# install_docker      = true
+# docker_source       = "official" # official or distro (not for alpine)
+# docker_log_max_size = "10m"
+# docker_log_max_file = 5
+
+# install_net_tools = true
+# install_rclone    = true
+# rclone_release    = "current"
+
+# extra_packages = ["htop", "tmux"]

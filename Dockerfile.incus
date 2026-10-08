@@ -48,7 +48,9 @@ RUN set -eux; \
 # that track Incus, so a commit is pinned: its main branch is rebased often and
 # a vanished commit fails the build instead of changing what ships. incusd
 # serves the build under /ui/ when INCUS_UI points at it.
-FROM node:24-alpine AS ui
+FROM node:26-alpine AS ui
+# The node 26 image ships no corepack, hence no yarn; the lockfile is yarn v1.
+RUN npm install -g yarn@1.22.22
 ARG INCUS_UI_REF=0031b46920cb26872c06715aad268cb5b98fde69
 RUN apk add --no-cache git
 WORKDIR /src

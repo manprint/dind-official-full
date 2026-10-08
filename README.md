@@ -2,7 +2,7 @@
 
 `docker:29.8.2-dind` + toolchain di sviluppo. `dockerd` resta root (comportamento DinD); la sessione parte come `alpine` (uid/gid 1000).
 
-Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativamente su Linux, macOS e Windows con Docker Desktop, OrbStack o WSL2.
+Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativamente su Linux, macOS e Windows con Docker Desktop, OrbStack o WSL2. La variante Incus ([sotto](#variante-incus)) richiede un host Linux con cgroup v2 e `/dev/fuse`: su Docker Desktop, OrbStack o WSL2 non è stata provata.
 
 ```text
 ghcr.io/manprint/dind-official-full           # completa
@@ -34,11 +34,23 @@ wget -qO docker-compose.minimal.bind.yml https://github.com/manprint/dind-offici
 docker compose -f docker-compose.minimal.bind.yml up -d
 ```
 
-I compose della release hanno l'immagine fissata alla versione; ci sono anche `docker-compose.yml` (named volumes) e `docker-compose.incus.yml` (variante Incus).
+Variante Incus (Incus al posto di Docker, v. [Variante Incus](#variante-incus)):
+
+```bash
+curl -fsSL https://github.com/manprint/dind-official-full/releases/latest/download/docker-compose.incus.yml -o docker-compose.incus.yml
+docker compose -f docker-compose.incus.yml up -d
+```
+
+```bash
+wget -qO docker-compose.incus.yml https://github.com/manprint/dind-official-full/releases/latest/download/docker-compose.incus.yml
+docker compose -f docker-compose.incus.yml up -d
+```
+
+I compose della release hanno l'immagine fissata alla versione; ci sono anche `docker-compose.yml` (named volumes). Nei file scaricati `DIND_TAG` e `INCUS_TAG` non hanno effetto: per un'altra versione si scarica il file dalla release di quel tag.
 
 ## Avvio
 
-I compose non buildano: usano `ghcr.io/manprint/dind-official-full[-minimal]:${DIND_TAG:-latest}`, scaricata se manca in locale. Per usare un'immagine buildata a mano, `just build` (o `just build-full` / `just build-minimal`) la tagga con quei nomi e `latest`, e `docker compose up -d` la prende senza pull.
+I compose non buildano: usano `ghcr.io/manprint/dind-official-full[-minimal]:${DIND_TAG:-latest}`, scaricata se manca in locale. Per usare un'immagine buildata a mano, `just build` (o `just build-full` / `just build-minimal`) la tagga con quei nomi e `latest`, e `docker compose up -d` la prende senza pull. Per la variante Incus: `just build-incus`, che tagga `ghcr.io/manprint/dind-official-full-incus:latest`.
 
 ```bash
 docker compose up -d
@@ -199,6 +211,8 @@ tests/smoke.sh dind-test 3
 
 Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate a `dockerd`), `DOCKER_DAEMON_INTERNAL_BIP`, dotfile, `HOME` e prompt, lock sul data-root, `docker stop`, chiave TLS corrotta, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`, `kill -9` del PID 1 dall'host con la restart policy, ricreazione del container sugli stessi volumi. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
 
+Smoke test della variante Incus: `tests/smoke.incus.sh IMAGE [CYCLES]` (`just smoke-incus TAG`). Richiede un host con cgroup v2, `/dev/fuse` e `--cap-add ALL`; il crash test (SIGKILL al PID 1 dall'host) usa anche `--privileged`, come lo smoke Docker.
+
 ## Note
 
 - persistenza Docker full in `/var/lib/docker` (overlayfs/containerd snapshotter incluso)
@@ -215,4 +229,29 @@ Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate 
 
 La versione minimal mantiene la logica DinD, l'utente `alpine`, sudo, rclone, fuse e la gestione dei bind mount, ma non installa Rust, GitHub CLI, toolchain C/C++, Node.js/npm, PM2, Java, Python, TypeScript o Angular CLI.
 
-Una variante con Incus al posto di Docker (container di sistema, UI web, API per OpenTofu) è descritta in [README_INCUS.md](README_INCUS.md). Le istanze si creano con gli script bash o con il template OpenTofu: guide in [incus_by_script.md](incus_by_script.md) e [incus_by_terraform.md](incus_by_terraform.md).
+## Variante Incus
+
+L'immagine `ghcr.io/manprint/dind-official-full-incus` esegue **Incus 7.5.1** al posto di `dockerd`: il container ospita container di sistema (Alpine, Debian, Ubuntu, Fedora…), con una web UI e un'API per OpenTofu/Terraform. Docker non gira nel container, ma si può installare dentro ogni istanza. Le sezioni *Variabili*, *Più istanze*, *Lock* e *Resilienza* di questo documento riguardano la variante Docker: per Incus valgono [README_INCUS.md](README_INCUS.md) e i suoi *Limiti invalicabili*.
+
+```bash
+docker compose -f docker-compose.incus.yml up -d
+docker compose -f docker-compose.incus.yml exec incus bash
+incus launch images:debian/12 web -c limits.memory=512MiB -c limits.cpu=2
+```
+
+- **Web UI** su `http://localhost:8080/`: nessun certificato da importare nel browser. Il proxy dentro il container parla con l'API presentando un certificato client che l'entrypoint genera e fida da solo.
+- **API** su `https://localhost:8443`: serve un certificato client fidato, con un token monouso (`docker exec incus-env incus config trust add tofu`) oppure con `INCUS_ENV_TRUST_CERT_FILE`.
+- **Requisiti**: host Linux con cgroup v2 e `/dev/fuse`. Il container non è `privileged`, ma ha `cap_add: ALL` e `apparmor`/`seccomp`/`systempaths=unconfined`.
+
+| Variabile | Default | Uso |
+| --- | --- | --- |
+| `INCUS_TAG` | `latest` | tag dell'immagine |
+| `INCUS_NAME` | `incus-env` | nome del container |
+| `INCUS_UI_BIND` / `INCUS_UI_PORT` | `127.0.0.1` / `8080` | web UI. Chi la raggiunge è amministratore di Incus: `0.0.0.0` solo con `INCUS_ENV_UI_PASSWORD` |
+| `INCUS_API_BIND` / `INCUS_API_PORT` | `127.0.0.1` / `8443` | API. Equivale a root sull'host delle istanze |
+| `INCUS_DATA` / `ALPINE_HOME` | `./data/incus/data` / `./data/incus/alpine-home` | bind mount di `/var/lib/incus` e `/home/alpine` |
+| `INCUS_ENV_STORAGE_DRIVER` | `dir` | driver del pool `default`, solo al primo avvio |
+| `INCUS_ENV_BRIDGE_ADDRESS` | auto | CIDR di `incusbr0` |
+| `INCUS_STOP_GRACE_PERIOD` | `120s` | `stop_grace_period` del container |
+
+Le altre variabili (`INCUS_ENV_*`, proxy, timeout di stop), la gestione di RAM e swap, i template per le istanze e la matrice dei test sono in [README_INCUS.md](README_INCUS.md). Per creare le istanze: [incus_by_script.md](incus_by_script.md) (script bash) e [incus_by_terraform.md](incus_by_terraform.md) (OpenTofu/Terraform).

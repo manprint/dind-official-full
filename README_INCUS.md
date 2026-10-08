@@ -11,6 +11,8 @@ Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container 
 - **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 44) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: script bash e, in `terraform/`, lo stesso come template OpenTofu/Terraform. Vedi la sezione dedicata.
 - **OpenTofu 1.13.1** (`tofu`, con il completamento bash) e il provider `lxc/incus` 1.2.0 già installato: `tofu init` funziona offline.
 
+Guide operative, con tutte le impostazioni, le modifiche dopo la creazione e backup/restore delle istanze: **[incus_by_script.md](incus_by_script.md)** (script bash) e **[incus_by_terraform.md](incus_by_terraform.md)** (OpenTofu/Terraform).
+
 ## Avvio
 
 ```bash
@@ -46,7 +48,7 @@ Non è `privileged: true`: bastano questi permessi, tutti già nel compose.
 | `device_cgroup_rules: c 10:236, c 10:237` | device-mapper e loop-control per LVM. |
 | `restart: unless-stopped`, `stop_grace_period: 120s` | ripartenza dopo crash/reboot dell'host; il tempo per fermare le istanze (in parallelo, v. *Stabilità*). |
 
-Anche `privileged: true` funziona, ma non serve.
+`privileged: true` non serve e non è stato provato come variante del compose (v. *Cosa NON è stato provato*).
 
 ## Variabili
 
@@ -63,9 +65,9 @@ Anche `privileged: true` funziona, ma non serve.
 | `INCUS_ENV_BRIDGE_ADDRESS` | auto | CIDR IPv4 di `incusbr0`, es. `10.10.200.0/24` (un indirizzo di rete diventa il suo `.1`). Applicata **a ogni avvio**: cambiandola il bridge si sposta |
 | `INCUS_UI_BIND` / `INCUS_UI_PORT` | `127.0.0.1` / `8080` | indirizzo/porta host del proxy della web UI. Chi lo raggiunge è amministratore di Incus: loopback di default, `0.0.0.0` solo con `INCUS_ENV_UI_PASSWORD` |
 | `INCUS_ENV_UI_PROXY` | `on` | `off` spegne il proxy (resta la UI su 8443 con certificato nel browser) |
-| `INCUS_ENV_UI_USER` / `INCUS_ENV_UI_PASSWORD` | `admin` / — | con la password il proxy chiede HTTP basic auth |
+| `INCUS_ENV_UI_USER` / `INCUS_ENV_UI_PASSWORD` | `admin` / — | con la password il proxy chiede HTTP basic auth; senza, nessuna autenticazione |
 | `INCUS_ENV_HTTPS_ADDRESS` | `:8443` | `core.https_address`; `none` spegne API e UI. A ogni avvio |
-| `INCUS_ENV_TRUST_CERT_FILE` / `_NAME` | — | certificato client (PEM, leggibile nel container) da fidare a ogni avvio, idempotente |
+| `INCUS_ENV_TRUST_CERT_FILE` / `_NAME` | — / `trusted-client` | certificato client (PEM, leggibile nel container) da fidare a ogni avvio con quel nome, idempotente |
 | `INCUS_ENV_SHUTDOWN_TIMEOUT` | `100` | secondi concessi allo stop di Incus (istanze, poi daemon): lo stop intero dura al massimo questo + 10 s. Un valore non numerico o 0 diventa 100, con un warning |
 | `INCUS_STOP_GRACE_PERIOD` | `120s` | `stop_grace_period` del container: oltre, Docker uccide tutto. Tienila almeno 10 s sopra `INCUS_ENV_SHUTDOWN_TIMEOUT` |
 
@@ -171,7 +173,7 @@ Le capability di un'istanza sono sempre un sottoinsieme di quelle del container 
 |---|---|---|
 | `security.nesting=true` | Docker/Podman/LXC dentro l'istanza | Docker funziona (sezione sotto) |
 | `security.syscalls.intercept.mknod=true` | `mknod` di device sicuri | `mknod /tmp/n c 1 3` OK |
-| `security.syscalls.intercept.setxattr`, `.bpf`, `.mount`, `.sched_setscheduler`, `.sysinfo` | syscall emulate dal daemon | `mknod`/`setxattr` provati |
+| `security.syscalls.intercept.setxattr`, `.bpf`, `.mount`, `.sched_setscheduler`, `.sysinfo` | syscall emulate dal daemon; **solo nelle istanze non privilegiate** (v. *Gestione RAM e swap*) | `mknod`/`setxattr`/`sysinfo` provati |
 | `security.idmap.isolated=true`, `security.idmap.size` | range uid dedicato per istanza | mappa di default `0 1000000 1000000000` |
 | `linux.kernel_modules=…` | carica moduli dell'host | **non provato**: servono i moduli dell'host e `/lib/modules` nel container |
 | device `unix-char`/`unix-block` | passa un device al container | `/dev/fuse` e `/dev/net/tun` sono già visibili in ogni istanza se il container esterno li ha (compose); aggiungerli a mano dà *Failed to add mount… già presente* |
@@ -189,7 +191,7 @@ incus exec dk -- apt-get install -y docker.io
 incus exec dk -- docker run --rm -m 100m --cpus 0.5 alpine cat /sys/fs/cgroup/memory.max
 ```
 
-Provato su Debian 12 (systemd): `docker run`, `--restart unless-stopped`, `-m 100m` → `memory.max=104857600`, `--cpus 0.5` → `cpu.max=50000 100000`, `--privileged` interno con tutte le capability. Su Alpine (OpenRC) Docker parte e gira, ma i limiti di memoria/CPU dei container interni falliscono (`memory.max: no such file`): nel cgroup radice dell'istanza restano processi e i controller non si possono delegare (EBUSY), lo stesso problema risolto sopra per l'esterno ma lato guest. Per Docker con limiti, usa immagini con systemd.
+Provato su Debian 12 (systemd): `docker run`, `--restart unless-stopped`, `-m 100m` → `memory.max=104857600`, `--cpus 0.5` → `cpu.max=50000 100000`, `--privileged` interno con tutte le capability. Su un'immagine Alpine (OpenRC) nuda Docker parte e gira, ma i limiti di memoria/CPU dei container interni falliscono (`memory.max: no such file`): nel cgroup radice dell'istanza restano processi e i controller non si possono delegare (EBUSY), lo stesso problema risolto sopra per l'esterno ma lato guest. Il template `create_incus_alpine.sh` lo risolve con il servizio `cgroup-delegate` (v. *Docker annidato su Alpine*); a mano, usa quello o un'immagine con systemd.
 
 ### Storage
 
@@ -228,7 +230,7 @@ Si copiano dove serve (un container con il client `incus`, un'altra macchina con
 | shell | `bash-completion` (anche per root) e alias **`ll='ls -alFh'` per tutti gli utenti**, shell di login e non (`/etc/profile.d/10-aliases.sh` + `/etc/bash/10-aliases.sh` su Alpine, `/etc/bash.bashrc` su Debian) |
 | altro | git, curl, wget, rsync, unzip, jq, htop, lsof, vim, nano |
 
-L'istanza nasce con `security.nesting=true` (serve a Docker), intercettazione di `mknod`/`setxattr`, `limits.memory=2GiB`, `limits.cpu=2`, `boot.autostart=true`.
+L'istanza nasce con `security.nesting=true` (serve a Docker), intercettazione di `mknod`/`setxattr`/`sysinfo`, `limits.memory=2GiB`, `limits.cpu=2`, `boot.autostart=true`.
 
 Esempi:
 
@@ -269,9 +271,9 @@ Tutte con un default in testata, sovrascrivibili dall'ambiente.
 | `INSTANCE_STORAGE_POOL`, `INSTANCE_NETWORK` | vuoti | pool/rete se diversi dal profilo |
 | `INSTANCE_IPV4` | vuoto | indirizzo fisso sul bridge gestito |
 | `INSTANCE_MEMORY`, `INSTANCE_CPU` | `2GiB`, `2` | `limits.memory`, `limits.cpu` (vuoto = nessun limite) |
-| `INSTANCE_SWAP` | vuoto | swap usabile dall'istanza: `512MiB`, `1GiB`, `2G`…; `0`/`off` = nessuna; vuoto = default di Incus (**nessuna**, anche con `limits.memory.swap=true`). Vedi *Memoria e swap* |
+| `INSTANCE_SWAP` | vuoto | swap usabile dall'istanza: `512MiB`, `1GiB`, `2G`…; `0`/`off` = nessuna; vuoto = default di Incus (**nessuna**, anche con `limits.memory.swap=true`). Vedi *[Gestione RAM e swap](#gestione-ram-e-swap)* |
 | `INSTANCE_DISK_SIZE` | vuoto | dimensione disco root (pool btrfs/lvm) |
-| `INSTANCE_NESTING`, `INSTANCE_INTERCEPT`, `INSTANCE_PRIVILEGED`, `INSTANCE_AUTOSTART` | `true`, `true`, `false`, `true` | `security.nesting`, intercept `mknod`/`setxattr`/`sysinfo`, `security.privileged`, `boot.autostart` |
+| `INSTANCE_NESTING`, `INSTANCE_INTERCEPT`, `INSTANCE_PRIVILEGED`, `INSTANCE_AUTOSTART` | `true`, `true`, `false`, `true` | `security.nesting`, intercept `mknod`/`setxattr`/`sysinfo` (senza effetto con `INSTANCE_PRIVILEGED=true`), `security.privileged`, `boot.autostart` |
 | `INSTANCE_CONFIG` | vuoto | altre chiavi `key=value` separate da spazio |
 | `INSTANCE_SSH_PUBLISH_PORT` | vuoto | porta dell'host incus inoltrata alla 22 (device `proxy`) |
 | `INSTANCE_RECREATE` | `false` | cancella un'istanza esistente con lo stesso nome (altrimenti errore) |
@@ -289,12 +291,7 @@ Tutte con un default in testata, sovrascrivibili dall'ambiente.
 
 ### Memoria, swap e CPU: cosa vedono i tool
 
-`limits.memory` e `limits.cpu` finiscono nel cgroup dell'istanza (`memory.max`, cpuset); lxcfs virtualizza `/proc/meminfo`, `/proc/cpuinfo`, `/proc/swaps`, `/proc/stat`. I tool sono coerenti solo se leggono da lì.
-
-- **Swap.** Incus non ha una *dimensione* di swap per i container: `limits.memory.swap` è un booleano e, misurato su Incus 7.5.1 con `limits.memory=2GiB`, `memory.swap.max` resta **0** sia di default sia con `true` (quindi lxcfs mostra `SwapTotal: 0` e htop `0K/0K`: è corretto, non c'è swap). `INSTANCE_SWAP=1GiB` scrive `raw.lxc: lxc.cgroup2.memory.swap.max = 1073741824` (misurato: cgroup, `/proc/meminfo`, `free`, htop mostrano 1 GiB, e sotto pressione la memoria finisce davvero in swap); `INSTANCE_SWAP=0` imposta `limits.memory.swap=false`. L'host deve avere swap (file o zram). `INSTANCE_CONFIG="raw.lxc=..."` ha la precedenza.
-- **`free` e `top` di busybox (Alpine) mostravano 47 GB e 2 GB di swap**, cioè l'host: usano la syscall `sysinfo()`, non `/proc/meminfo`. Gli script impostano `security.syscalls.intercept.sysinfo=true` (parte di `INSTANCE_INTERCEPT`): ora `free` dice 2048 MB e lo swap vero.
-- **`top`/`htop` con 0 usati su Alpine con Docker.** lxcfs calcola l'uso dal cgroup del PID 1 e toglie solo il suffisso `init.scope`. Il servizio OpenRC `cgroup-delegate` spostava i processi in `/init`: lxcfs leggeva un cgroup vuoto e `MemFree` era uguale a `MemTotal`, mentre il limite (2 GiB) era giusto. Ora li sposta in `init.scope`.
-- **Verifica** (`tests/templates.sh`, per ogni template, al primo avvio e dopo un riavvio): `memory.max` 2 GiB, `MemTotal` 2097152 kB, `nproc` e `/proc/cpuinfo` = 2 CPU, `free` totale 2048; un processo che alloca 300 MiB li fa comparire come *usati* in `free`, `/proc/meminfo`, `memory.current` e (Alpine) `busybox top`; con `INSTANCE_SWAP=1GiB` cgroup, `/proc/meminfo` e `free` dicono 1 GiB e 2,4 GiB di tmpfs in un'istanza da 2 GiB entrano solo usando la swap.
+`limits.memory` e `limits.cpu` finiscono nel cgroup dell'istanza (`memory.max`, cpuset); lxcfs virtualizza `/proc/meminfo`, `/proc/cpuinfo`, `/proc/swaps`, `/proc/stat`. CPU: `nproc` e `/proc/cpuinfo` mostrano le CPU di `limits.cpu`. RAM e swap, con quale tool si vede cosa, cosa serve sull'host e come cambiarle: sezione **[Gestione RAM e swap](#gestione-ram-e-swap)**.
 
 ### Docker annidato su Alpine
 
@@ -354,6 +351,173 @@ Per ogni immagine e per ogni modo (senza e con `--privileged`) il test attende c
 - `Failed to set RLIMIT_CORE: Operation not permitted` compare in log anche quando tutto funziona.
 - **Fedora**: l'immagine non ha un broker D-Bus, quindi `systemd-run` non funziona (`Failed to connect to system scope bus`); il test usa una unit oneshot.
 - Le immagini si scaricano una volta dall'host del test e si caricano in ogni istanza (`docker save | docker load`): il limite di pull anonimo di Docker Hub non regge 5 template × 10 immagini.
+
+## Gestione RAM e swap
+
+Vale per le istanze create a mano, con gli script `create_incus_*.sh` e con il template OpenTofu. Le misure sono di Incus 7.5.1 su un host con 47 GB di RAM e 2 GiB di swap.
+
+### Chi vede cosa
+
+| Dove | Cosa vede | Perché |
+|---|---|---|
+| Container Docker esterno (`incus-env`, o il `dind` delle altre varianti) | RAM e swap **dell'host** | il compose non mette limiti di memoria al container: è corretto |
+| Istanza, nel cgroup | `memory.max` = `limits.memory`, `memory.swap.max` = swap impostata | sono i limiti che il kernel applica davvero |
+| Istanza, `/proc/meminfo` e `/proc/swaps` | i limiti, letti da lxcfs | lxcfs (FUSE, serve `/dev/fuse` nel compose) li calcola dal cgroup |
+
+I tool dentro l'istanza leggono da due fonti diverse, e per questo possono dare numeri diversi:
+
+| Tool | Legge da | Istanza **non privilegiata** | Istanza **privilegiata** |
+|---|---|---|---|
+| `free` di **busybox** (Alpine: `/bin/free`) | syscall `sysinfo()` | i limiti, grazie a `security.syscalls.intercept.sysinfo=true` | **RAM e swap dell'host** (es. 47715 MB): l'intercettazione non vale nelle istanze privilegiate |
+| `top` di busybox | `/proc/meminfo` (lxcfs) | limiti | limiti |
+| `htop` | `/proc/meminfo` (lxcfs) | limiti | limiti |
+| `free` di **procps** (Debian, Ubuntu, Fedora; su Alpine il pacchetto `procps-ng`) | `/proc/meminfo` (lxcfs) | limiti | limiti |
+| `cat /sys/fs/cgroup/memory.max`, `memory.swap.max` | cgroup | limiti impostati | limiti impostati |
+
+Quindi su Debian, Ubuntu e Fedora i numeri sono coerenti in ogni caso. Su Alpine `free` dice il vero solo se l'istanza non è privilegiata, oppure se è installato `procps-ng`: `/usr/bin/free` viene prima di `/bin/free` nel `PATH`.
+
+### Le regole
+
+1. **RAM** = `limits.memory` (`INSTANCE_MEMORY` / `instance_memory`, default `2GiB`). Diventa `memory.max` e oltre quel limite interviene l'OOM killer dell'istanza. **Si cambia a caldo**, senza riavvio (misurato: `limits.memory=1GiB` → `memory.max` e `MemTotal` subito a 1 GiB).
+2. **Swap**: di default un'istanza **non ne ha** (`memory.swap.max` = 0, `SwapTotal: 0`), anche con `limits.memory.swap=true`, perché quella chiave di Incus è solo un sì/no. La dimensione si dà con `INSTANCE_SWAP` / `instance_swap`, che diventa `raw.lxc: lxc.cgroup2.memory.swap.max = <byte>`. Con `0`/`off` diventa invece `limits.memory.swap=false`. Vale **dal prossimo avvio** dell'istanza.
+3. **La swap è quella dell'host, in comune.** Il limite dell'istanza dice quanta swap dell'host può usare, non ne crea di nuova, e la stessa swap è condivisa con l'host e con le altre istanze. Se il limite supera la swap dell'host:
+   - lxcfs (`/proc/meminfo`, `htop`, `free` di procps) mostra la swap dell'host;
+   - `free` di busybox con l'intercettazione mostra il limite.
+
+   Misurato con limite 4 GiB e 2 GiB di swap sull'host: `memory.swap.max` 4294967296, `SwapTotal` 2097148 kB, busybox `free` 4096. Quella usabile davvero è **al massimo la swap libera dell'host**.
+4. **`security.syscalls.intercept.*` non vale nelle istanze privilegiate.** Incus non installa il filtro seccomp di notifica: il profilo `/var/lib/incus/security/seccomp/NOME` ha 0 righe `notify`, contro 1 senza `security.privileged`. Con `INSTANCE_PRIVILEGED=true`, `INSTANCE_INTERCEPT=true` non ha effetto: niente `sysinfo`, e nemmeno `mknod`/`setxattr` emulati (in un'istanza privilegiata servono meno, perché root è root).
+5. Il kernel decide **quando** usare la swap con `vm.swappiness` **dell'host**: su cgroup v2 non esiste uno swappiness per istanza.
+6. La somma dei `limits.memory` delle istanze può superare la RAM dell'host (overcommit), ma allora sotto pressione interviene l'OOM killer dell'host. Se nel compose si aggiunge `mem_limit`/`memswap_limit` al container esterno, quel tetto vale per tutte le istanze insieme.
+
+### Cosa serve sull'host
+
+- **cgroup v2** e `/dev/fuse` (già richiesti, v. *Cosa serve al container esterno*). Senza `/dev/fuse` lxcfs non parte e le istanze vedono RAM e CPU dell'host.
+- **Swap** almeno pari a quella che vuoi far usare alle istanze, più quella che usa l'host stesso. Controllo:
+
+  ```bash
+  swapon --show              # file/partizioni di swap e quanto sono usati
+  free -h
+  cat /proc/sys/vm/swappiness
+  ```
+
+- Per aggiungerne (senza toccare lo swapfile esistente, che andrebbe prima svuotato con `swapoff`):
+
+  ```bash
+  sudo fallocate -l 8G /swapfile-incus      # su btrfs: sudo btrfs filesystem mkswapfile --size 8G /swapfile-incus
+  sudo chmod 600 /swapfile-incus
+  sudo mkswap /swapfile-incus
+  sudo swapon /swapfile-incus
+  echo '/swapfile-incus none swap sw 0 0' | sudo tee -a /etc/fstab   # resta dopo il reboot
+  ```
+
+  In alternativa zram (`zram-tools` / `systemd-zram-generator`), che comprime in RAM invece di scrivere su disco.
+- Nel compose **niente** da cambiare: il container esterno non ha limiti di memoria e il suo `memory.swap.max` è `max`.
+
+### Procedura, passo per passo
+
+**1. Guarda cosa c'è adesso** (`NOME` = nome dell'istanza, comandi dal container: `docker exec -it incus-env bash`):
+
+```bash
+incus config show NOME | grep -E 'limits|raw.lxc|security'
+incus exec NOME -- sh -c 'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.swap.max; grep -E "^(MemTotal|SwapTotal)" /proc/meminfo'
+sudo grep -c notify /var/lib/incus/security/seccomp/NOME   # 0 = nessuna intercettazione attiva (istanza privilegiata)
+cat /proc/swaps                                             # swap dell'host, vista dal container
+```
+
+**2. Decidi i valori.** RAM a piacere; swap **≤ swap libera dell'host**, altrimenti alza prima quella (sezione sopra). Tieni l'istanza **non privilegiata** salvo un carico che non regga lo user namespace. Docker dentro funziona lo stesso, con `security.nesting=true`.
+
+**3a. Istanza gestita da OpenTofu** (`/opt/incus-template/terraform` copiato sotto la home). In `terraform.tfvars`:
+
+```hcl
+instance_memory     = "2GiB"
+instance_swap       = "2GiB"   # ≤ swap libera dell'host; "0" = nessuna; "" = default di Incus (nessuna)
+instance_privileged = false    # con true free di busybox mostra l'host (regola 4)
+instance_intercept  = true
+```
+
+```bash
+tofu plan      # deve dire "update in-place" (~), non "must be replaced"
+tofu apply
+incus restart NOME   # swap e security.* valgono dal prossimo avvio; la memoria è già applicata
+```
+
+Sono tutte impostazioni `instance_*`, quindi cambiano **sul posto**. Non toccare `extra_packages` per questo: è un'impostazione del guest e cambiarla **ricrea l'istanza**. Non cambiare a mano con `incus config set` un'istanza gestita da OpenTofu: il prossimo `apply` rimette i valori del file.
+
+**3b. Nuova istanza con gli script bash:**
+
+```bash
+INSTANCE_NAME=web INSTANCE_MEMORY=2GiB INSTANCE_SWAP=2GiB INSTANCE_PRIVILEGED=false \
+  /opt/incus-template/create_incus_alpine.sh
+```
+
+Gli script rifiutano un'istanza che esiste già. `INSTANCE_RECREATE=true` la **cancella** e la rifà da zero, quindi i dati dentro si perdono: per un'istanza esistente usa il passo 3c.
+
+**3c. Istanza esistente creata con gli script o a mano** (non gestita da OpenTofu):
+
+```bash
+incus config set NOME limits.memory=2GiB                                    # subito
+incus config set NOME raw.lxc="lxc.cgroup2.memory.swap.max = $((2*1024*1024*1024))"
+incus config set NOME security.privileged=false
+incus config set NOME security.syscalls.intercept.sysinfo=true
+incus restart NOME
+```
+
+- Usa la forma `chiave="valore"`. Con la forma deprecata `raw.lxc "lxc… = N"`, separata da spazio, Incus legge l'`=` del valore come separatore e rifiuta (*unknown key*).
+- `raw.lxc` è una chiave sola: `set` la **sostituisce tutta**. Se contiene già altre righe (`incus config get NOME raw.lxc`), riscrivile insieme, una per riga.
+- Per togliere la swap: `incus config unset NOME raw.lxc` (o `limits.memory.swap=false`), poi `incus restart NOME`.
+
+**Passare da privilegiata a non privilegiata.** Al primo avvio dopo il cambio Incus rimappa gli uid del filesystem dell'istanza (`volatile.idmap.current`: root dell'istanza = uid 1000000 del container). Misurato su un'istanza Alpine creata con `create_incus_alpine.sh` (Docker compreso), sul pool `dir`:
+- il riavvio ha richiesto 3–4 s;
+- il container Docker interno con `--restart unless-stopped` e un volume è ripartito, con il volume ancora scrivibile;
+- `docker run -m 64m` funziona;
+- i file restano di root e di `alpine` dentro l'istanza.
+
+Su istanze grandi la rimappatura può richiedere più tempo.
+
+**3d. Se l'istanza deve restare privilegiata** (solo Alpine: sulle altre distro `free` è già procps):
+
+```bash
+incus exec NOME -- apk add procps-ng      # free diventa /usr/bin/free, letto da /proc/meminfo
+```
+
+Per le istanze nuove: `EXTRA_PACKAGES=procps-ng` negli script, `extra_packages = ["procps-ng"]` in OpenTofu. Su un'istanza OpenTofu già esistente quest'ultima ricrea l'istanza: per non ricrearla, usa `apk add` a mano. Misurato in un'istanza privilegiata da 1 GiB: busybox `free` 47715 MB, procps `free` 1024 MB.
+
+**4. Verifica** (dopo il riavvio):
+
+```bash
+incus exec NOME -- sh -c 'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.swap.max; free -m; grep -E "^(MemTotal|SwapTotal)" /proc/meminfo'
+```
+
+Atteso con 2 GiB + 2 GiB:
+- `2147483648` e `2147483648`;
+- `free` con Mem 2048 e Swap 2048;
+- `MemTotal: 2097152 kB` e `SwapTotal` 2 GiB (o la swap dell'host, se è minore);
+- in `htop` gli stessi totali.
+
+Se `free` di busybox mostra ancora l'host, l'istanza è privilegiata (passo 1). Se `SwapTotal` è più basso del limite, l'host ha meno swap (regola 3).
+
+### Esempio: privilegiata, 2 GiB + 4 GiB di swap, host con 2 GiB di swap
+
+| Tool | Mostrava | Perché |
+|---|---|---|
+| `free` (busybox) | Mem 47715, Swap 2048 (dell'host) | istanza privilegiata → `sysinfo()` non intercettato |
+| `htop` | Mem 2G, Swap 2G | Mem = limite; Swap = swap dell'host, minore dei 4 GiB chiesti |
+| cgroup | `memory.max` 2 GiB, `memory.swap.max` 4 GiB | i limiti sono applicati |
+
+La correzione è `instance_privileged = false` (o `procps-ng`) più `incus restart`. Per la swap: `instance_swap = "2GiB"`, oppure almeno altri 2 GiB di swap sull'host.
+
+### Problemi già risolti
+
+- **`top`/`htop` con 0 usati su Alpine con Docker.** lxcfs calcola l'uso dal cgroup del PID 1 e toglie solo il suffisso `init.scope`. Il servizio OpenRC `cgroup-delegate` spostava i processi in `/init`, quindi lxcfs leggeva un cgroup vuoto e `MemFree` era uguale a `MemTotal`, mentre il limite (2 GiB) era giusto. Ora li sposta in `init.scope`.
+- **`free` di busybox con la RAM dell'host** nelle istanze non privilegiate: gli script e il template impostano `security.syscalls.intercept.sysinfo=true` (parte di `INSTANCE_INTERCEPT`).
+
+### Verifiche eseguite
+
+- `tests/templates.sh`, per ogni template, al primo avvio e dopo un riavvio:
+  - `memory.max` 2 GiB, `MemTotal` 2097152 kB, `nproc` e `/proc/cpuinfo` = 2 CPU, `free` totale 2048;
+  - un processo che alloca 300 MiB compare come *usato* in `free`, `/proc/meminfo`, `memory.current` e (Alpine) `busybox top`;
+  - con `INSTANCE_SWAP=1GiB`: cgroup, `/proc/meminfo` e `free` dicono 1 GiB, e 2,4 GiB di tmpfs entrano in un'istanza da 2 GiB solo usando la swap.
+- Prove a mano (#53 della matrice): istanza privilegiata contro non privilegiata, profilo seccomp, `procps-ng`, passaggio da privilegiata a non privilegiata con Docker dentro, limite di swap oltre la swap dell'host, `limits.memory` a caldo, sintassi di `raw.lxc`.
 
 ## Stabilità: cosa fa l'entrypoint
 
@@ -418,6 +582,8 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 27 | Shell interattiva (`docker run -it`): prompt a colori con `(itenv)`, `exit` ferma il daemon pulito, nessun residuo | OK |
 | 28 | `tests/smoke.incus.sh` (18 controlli, 3 cicli di kill, su bind mount) | OK in ~30 s |
 | 29 | Build da zero (`just build-incus-clean`: `incusd` e UI compilati, checksum del sorgente verificato) + `tests/smoke.incus.sh` sull'immagine così costruita | OK, 18/18; build 1 min 8 s su questo host |
+| 30 | **OpenTofu** (provider `lxc/incus`) dal host contro la porta 8443 pubblicata: `apply` con token, istanza `tf1` con `limits.memory` creata e `RUNNING`; dopo un crash del container `plan` senza drift; `destroy` | OK |
+| 31 | Compose con **bind mount** su ext4 (`INCUS_DATA`/`ALPINE_HOME`): primo avvio, `docker restart`, 3 crash, `down`/`up`, istanze Debian (nesting) e Alpine con limiti | OK: stato identico ai named volume, home seminata (dotfile di `alpine`), `memory.max` e rete intatti |
 | 32 | Template `create_incus_alpine.sh` / `create_incus_debian13.sh` (v. sezione dedicata): utente, ssh, locale/ora/tastiera, Docker annidato con limiti, rclone/fuse, variabili | OK su entrambi, ~25 s ciascuno |
 | 33 | **Proxy web UI** su 8080: primo avvio genera e fida il certificato `incus-ui`; `/ui/` 200 e `/1.0` `auth: trusted` senza nulla nel browser; `/` → 302 `/ui/`; WebSocket `/1.0/events` → 101; ricreazione del container, `kill -9` del PID 1 e `docker stop`: stesso certificato, una sola voce nel trust store, stop 1 s exit 0 | OK |
 | 34 | Proxy con `INCUS_ENV_UI_PASSWORD`: senza credenziali o con password errata 401, corretta 200 | OK |
@@ -425,8 +591,6 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 36 | **Ubuntu 24.04, Ubuntu 26.04, Fedora 44**: `create_incus_ubuntu2404.sh`, `create_incus_ubuntu2604.sh`, `create_incus_fedora.sh` con `tests/templates.sh` (tutta la tabella *Verifica eseguita*) | OK; 3 bug trovati e corretti (sotto) |
 | 37 | **Memoria e swap**: `INSTANCE_SWAP` (cgroup, lxcfs, `free`, htop; swap usata sotto pressione), `sysinfo` intercettato, `init.scope` su Alpine; `free`/`top`/`htop` coerenti con il limite | OK su tutti e cinque i template, prima e dopo il riavvio |
 | 38 | **Immagini jrei** (systemd Debian 12/13, Ubuntu 22.04/24.04/26.04, Fedora, CentOS 7/8, OpenRC Alpine) sul Docker di ogni template, con e senza `--privileged` | OK 80/90; i 10 restanti (CentOS 7, 2 modi × 5 template) sono attesi (systemd 219 su cgroup v2) e uguali su un host normale |
-| 31 | Compose con **bind mount** su ext4 (`INCUS_DATA`/`ALPINE_HOME`): primo avvio, `docker restart`, 3 crash, `down`/`up`, istanze Debian (nesting) e Alpine con limiti | OK: stato identico ai named volume, home seminata (dotfile di `alpine`), `memory.max` e rete intatti |
-| 30 | **OpenTofu** (provider `lxc/incus`) dal host contro la porta 8443 pubblicata: `apply` con token, istanza `tf1` con `limits.memory` creata e `RUNNING`; dopo un crash del container `plan` senza drift; `destroy` | OK |
 | 39 | `docker stop` mentre gira un'operazione che non si può annullare (`incus stop --timeout 300` su un'istanza che ignora SIGPWR) | OK: 6–7 s, exit 0, l'altra istanza fermata in ordine (prima della correzione: lo shutdown aspettava l'operazione, 59 s con un export) |
 | 40 | `docker stop` con l'API irraggiungibile per il client (`unix.socket` a `0600`) | OK: SIGPWR, 2–3 s, exit 0, istanza fermata in ordine (prima: SIGTERM, cioè reload, 120 s, exit 137, istanza uccisa) |
 | 41 | lxcfs ucciso con `kill -9` | riavviato entro 5 s, di nuovo con `oom_score_adj=-1000`; le istanze accese leggono *Socket not connected* da `/proc/meminfo` finché non si riavviano (v. *Limiti invalicabili*); dopo `incus restart` `MemTotal` torna al limite |
@@ -441,6 +605,8 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 50 | `MODE=tofu tests/templates.sh` sui cinque template (v. *Verifica eseguita*) | OK, 105/105 in 466 s |
 | 51 | `tofu init` con `--network none` (provider dal mirror, 53 test); una versione del provider che il mirror non ha → *no available releases match*; con `~/.tofurc` `direct {}` viene scaricata dal registry, firmata | OK |
 | 52 | HashiCorp Terraform 1.16.5 sul template (`TOFU=terraform tests/terraform.sh`): `init` da `registry.terraform.io` (stessa chiave di firma), `validate`, `fmt`, 53 test anche sulla copia configurata | OK |
+| 53 | **RAM e swap**, a mano su un container `incus-env` separato. Istanza Alpine privilegiata: profilo seccomp senza `notify`, busybox `free` = host, procps `free` = limite. Passaggio a non privilegiata con Docker dentro (`create_incus_alpine.sh`): busybox `free` = limite, container `--restart unless-stopped` e volume ripartiti, `docker run -m 64m` OK. `memory.swap.max` 4 GiB con 2 GiB di swap sull'host: `SwapTotal` 2 GiB, busybox `free` 4096. `limits.memory` cambiato a caldo; `raw.lxc` con la forma `chiave=valore` (quella con spazio rifiutata); `unset raw.lxc` → swap 0 | OK |
+| 54 | **Backup, restore, modifiche** (a mano, container `incus-env` separato; v. [incus_by_script.md](incus_by_script.md) e [incus_by_terraform.md](incus_by_terraform.md)). Script: snapshot e restore (torna anche la configurazione, Docker riparte), export con e senza snapshot, `delete` + `import` (IP fisso, limiti, snapshot, container Docker), import e `copy` accanto all'originale (MAC, IP, porta ssh da cambiare), `publish` da snapshot, device `disk` con e senza `shift=true`, `rename` da accesa rifiutato, disco su pool `dir` senza effetto, backup a freddo di `INCUS_DATA` + `ALPINE_HOME` ripristinato in altre directory. OpenTofu: snapshot a mano senza drift, `incus_instance_snapshot` (conflitto di nome, import non supportato, `destroy -target`), export/`delete`/`import` con piano *No changes*, stato perso ricostruito (`-target=terraform_data.guest` + import con `image=`) senza ricreare né riprovisionare, IP/porta/device/`instance_config`/disco cambiati sul posto, clone con i dati in un secondo stato, `destroy` che toglie anche gli snapshot manuali | OK |
 
 ### Bug trovati dai test (e corretti)
 
@@ -448,7 +614,7 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 2. **Il perdente del lock cancellava i socket del vincitore**: la pulizia girava prima del lock, quindi un secondo container sullo stesso volume eliminava `unix.socket` del primo (il client smetteva di rispondere). Ora i file nel volume si puliscono solo a lock acquisito; prima del lock si tocca solo `/run` (strato del container). Il perdente non applica più la configurazione perché `wait_incus` richiede un `incusd` nel proprio namespace PID.
 3. **Race sui controller cgroup**: i processi lanciati da `wait_incus` mentre il lato root li spostava lasciavano EBUSY (*controller … not delegated*); ora lo spostamento si ripete.
 4. **Mancavano** `/etc/subuid`/`subgid`, il remount rw di `/sys` e la sintassi `incus config set chiave=valore` (la forma con spazio è deprecata).
-5. **`free`/`top`/`htop` incoerenti su Alpine** (v. *Memoria, swap e CPU*): busybox leggeva `sysinfo()` (RAM e swap dell'host) e il servizio `cgroup-delegate` spostava i processi in `/init` invece di `init.scope`, per cui lxcfs vedeva 0 usati. Corretti con `security.syscalls.intercept.sysinfo=true` e `init.scope`.
+5. **`free`/`top`/`htop` incoerenti su Alpine** (v. *Gestione RAM e swap*): busybox leggeva `sysinfo()` (RAM e swap dell'host) e il servizio `cgroup-delegate` spostava i processi in `/init` invece di `init.scope`, per cui lxcfs vedeva 0 usati. Corretti con `security.syscalls.intercept.sysinfo=true` e `init.scope`.
 6. **Ubuntu: `sudo` senza password.** L'immagine installa `/etc/sudoers.d/90-incus` con `NOPASSWD` per `ubuntu`: lo script lo toglie (ricompare solo con `USER_SUDO_NOPASSWD=true`).
 7. **Ubuntu: `ll` sovrascritto.** Il `~/.bashrc` di Ubuntu definisce `alias ll='ls -alF'` dopo `/etc/bash.bashrc`: gli script lo riscrivono in skel, nella home dell'utente e in quella di root.
 8. **Fedora: `LC_ALL` azzerato.** `/etc/profile.d/lang.sh` fa `unset LC_ALL` dopo il nostro file: il file è ora `zz-locale.sh` (e `zz-aliases.sh`, perché `colorls.sh` definisce un suo `ll`).
@@ -488,6 +654,8 @@ Cose che il container non può risolvere da solo: si gestiscono fuori (host, VM,
 - **Niente VM** (`/dev/kvm` assente), niente ZFS, LVM thin pool solo se il kernel dell'host ha il target `thin-pool`.
 - **Requisiti dell'host**: cgroup v2, `/dev/fuse` (senza, le istanze vedono la memoria e le CPU dell'host), kernel e moduli dell'host (le istanze non ne hanno di propri: `sysctl` e moduli sono quelli dell'host).
 - **Capability**: un'istanza non ne ha mai più del container esterno (`cap_add: ALL` è il tetto).
+- **La swap di un'istanza è quella dell'host.** Il limite (`INSTANCE_SWAP`) dice quanta ne può usare, non la crea: oltre la swap libera dell'host non si va, ed è condivisa con l'host e con le altre istanze. `vm.swappiness` è quello dell'host. v. *[Gestione RAM e swap](#gestione-ram-e-swap)*.
+- **Istanze privilegiate: niente intercettazione delle syscall.** Con `security.privileged=true` Incus ignora `security.syscalls.intercept.*`: `free` di busybox (Alpine) mostra RAM e swap dell'host. `htop`, `top` e `/proc/meminfo` invece mostrano i limiti. Rimedio: istanza non privilegiata, oppure `procps-ng`.
 - **Sicurezza**: l'API (8443) e il proxy della UI (8080) equivalgono a root sull'host delle istanze; la basic auth del proxy passa in chiaro su HTTP.
 - **Template OpenTofu: la password dell'utente è in chiaro nello stato.** `user_password` arriva al provisioning come variabile d'ambiente del comando `exec` del provider. Quindi finisce in `terraform.tfstate` e in un piano salvato con `-out`; `sensitive` la nasconde solo nell'output di `plan`/`apply`. Tieni privata la copia del template, oppure cambia la password nell'istanza dopo la creazione.
 - **Template OpenTofu: l'output del provisioning si vede solo se fallisce.** Il provider non trasmette l'output di `exec` mentre gira: per minuti si vede solo *Still creating...*. Se il provisioning fallisce, l'errore riporta stdout e stderr dello script e l'istanza resta *tainted* per l'ispezione.

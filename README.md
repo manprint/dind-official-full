@@ -5,7 +5,9 @@
 Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativamente su Linux, macOS e Windows con Docker Desktop, OrbStack o WSL2.
 
 ```text
-ghcr.io/manprint/dind-official-full
+ghcr.io/manprint/dind-official-full           # completa
+ghcr.io/manprint/dind-official-full-minimal   # minimal
+ghcr.io/manprint/dind-official-full-incus     # Incus al posto di Docker, v. README_INCUS.md
 ```
 
 ## Download ultima release
@@ -32,7 +34,7 @@ wget -qO docker-compose.minimal.bind.yml https://github.com/manprint/dind-offici
 docker compose -f docker-compose.minimal.bind.yml up -d
 ```
 
-I compose della release hanno l'immagine fissata alla versione; c'è anche `docker-compose.yml` (named volumes).
+I compose della release hanno l'immagine fissata alla versione; ci sono anche `docker-compose.yml` (named volumes) e `docker-compose.incus.yml` (variante Incus).
 
 ## Avvio
 
@@ -213,4 +215,4 @@ Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate 
 
 La versione minimal mantiene la logica DinD, l'utente `alpine`, sudo, rclone, fuse e la gestione dei bind mount, ma non installa Rust, GitHub CLI, toolchain C/C++, Node.js/npm, PM2, Java, Python, TypeScript o Angular CLI.
 
-Una variante con Incus al posto di Docker (container di sistema, UI web, API per OpenTofu) è descritta in [README_INCUS.md](README_INCUS.md).
+Una variante con Incus al posto di Docker (container di sistema, UI web, API per OpenTofu) è descritta in [README_INCUS.md](README_INCUS.md). Le istanze si creano con gli script bash o con il template OpenTofu: guide in [incus_by_script.md](incus_by_script.md) e [incus_by_terraform.md](incus_by_terraform.md).

@@ -1,4 +1,4 @@
-FROM docker:29.8.2-dind
+FROM docker:29.9.0-dind
 
 # "current" resolves to the newest rclone at build time; CI resolves it once
 # and passes the same version to every platform build. Not RCLONE_VERSION:
@@ -10,9 +10,9 @@ ENV TZ=Europe/Rome \
 	LANG=it_IT.UTF-8 \
 	LC_ALL=it_IT.UTF-8 \
 	LANGUAGE=it_IT:it \
-	JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
+	JAVA_HOME=/usr/lib/jvm/java-25-openjdk \
 	VIRTUAL_ENV=/opt/venv \
-	PATH="/opt/venv/bin:/usr/lib/jvm/java-21-openjdk/bin:${PATH}"
+	PATH="/opt/venv/bin:/usr/lib/jvm/java-25-openjdk/bin:${PATH}"
 
 # docker-init (tini) is not PID 1 here, the entrypoint is: as a subreaper it
 # still reaps dockerd's orphans, and it stops warning that it cannot.
@@ -59,9 +59,9 @@ RUN set -eux; \
 		nftables \
 		ngrep \
 		nmap \
-		nodejs \
+		nodejs-current \
 		npm \
-		openjdk21-jdk \
+		openjdk25-jdk \
 		py3-pip \
 		py3-virtualenv \
 		python3 \

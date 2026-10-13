@@ -51,7 +51,7 @@ RUN set -eux; \
 FROM node:26-alpine AS ui
 # The node 26 image ships no corepack, hence no yarn; the lockfile is yarn v1.
 RUN npm install -g yarn@1.22.22
-ARG INCUS_UI_REF=0031b46920cb26872c06715aad268cb5b98fde69
+ARG INCUS_UI_REF=f820acc33ceff552da5601472fa4e4b3ff0c0f4f
 RUN apk add --no-cache git
 WORKDIR /src
 # vite.config.ts stamps the build with `git rev-parse`, so a checkout, not a tarball.

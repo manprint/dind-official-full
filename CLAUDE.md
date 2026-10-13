@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Docker-in-Docker development image built on `docker:29.8.2-dind`. No application code — the deliverables are two Dockerfiles, two shell entrypoints, three dotfiles, three compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full`, `...-full-minimal` and `...-full-incus`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
+Docker-in-Docker development image built on `docker:29.9.0-dind`. No application code — the deliverables are two Dockerfiles, two shell entrypoints, three dotfiles, three compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full`, `...-full-minimal` and `...-full-incus`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
 
 README is in Italian; container locale/timezone are `it_IT.UTF-8` / `Europe/Rome`.
 
@@ -129,7 +129,7 @@ All three compose files set `restart: unless-stopped`, so the host daemon brings
 
 ### Full vs minimal
 
-Same base, same user/sudo/rclone/fuse/bind-mount logic, same dotfiles. The full variant adds Rust, Go, the C/C++ toolchain (`build-base`), Node/npm, Java 21, a Python venv at `/opt/venv` (prepended to `PATH`, owned by `alpine` so `pip install` needs no sudo), GitHub CLI, and globally-installed `prettier eslint typescript @angular/cli pm2`. `pm2-logrotate` is a PM2 module (`pm2 install`), not an npm global.
+Same base, same user/sudo/rclone/fuse/bind-mount logic, same dotfiles. The full variant adds Rust, Go, the C/C++ toolchain (`build-base`), Node/npm, Java 25, a Python venv at `/opt/venv` (prepended to `PATH`, owned by `alpine` so `pip install` needs no sudo), GitHub CLI, and globally-installed `prettier eslint typescript @angular/cli pm2`. `pm2-logrotate` is a PM2 module (`pm2 install`), not an npm global.
 
 Both variants deliberately install `coreutils` and `tar` to displace the busybox applets. Alpine's `tar` package overwrites `/bin/tar` — the busybox symlink — with the real GNU binary, so there is no PATH-order subtlety and no `/usr/bin/tar`. Neither package is redundant: dropping them silently reverts `tar` to busybox 1.37 (no `--sort`, `--xattrs`, `--owner`/`--group`, `--wildcards`) and `ls`/`dircolors`/`date` to the busybox versions. `busybox tar` still works if the applet is ever needed explicitly. Likewise `flock` (util-linux, for the data-root lock) and `ncurses` (`tput`, without which the bashrc prompt has no colours).
 

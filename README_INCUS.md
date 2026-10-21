@@ -612,6 +612,7 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 57 | `INCUS_ENV_HTTPS_ADDRESS=127.0.0.2:8443` (API su un solo indirizzo) | prima: `/ui/` e `/1.0` 502 dal proxy (puntava a `127.0.0.1`); ora 200 e `auth: trusted`, nello smoke test |
 | 58 | `tests/templates.sh` sui cinque template con l'immagine della revisione, poi `MODE=tofu` | OK: bash 80/80 in 455 s; tofu 103 OK + 2 *skip*. La prova della swap sotto pressione su Ubuntu 26.04 e Fedora, con ~400 MiB di swap libera sull'host (misurati subito dopo; il resto era di altri processi), si fermava a metà (`dd` fallito, poi `Failed to retrieve PID of executing child process`); la prova ne prende 445–668 MiB, ora sotto 800 MiB liberi viene saltata |
 | 59 | Un client `incus` finto che non risponde mai (`incusd` vero acceso): l'entrypoint rinuncia dopo la scadenza di 120 s e prosegue; ora nello smoke test (completo: 36/36 in 222 s) | OK, rinuncia dopo 122 s (prima: fino a 22 minuti, v. bug 21) |
+| 60 | `JREI=1 tests/templates.sh` sull'immagine 1.2.3: tutte le immagini jrei su Debian 13, `jrei/openrc-alpine` (il ramo OpenRC, toccato dal bug 23) su Alpine, Ubuntu 24.04 e 26.04, Fedora; con e senza `--privileged` | OK: 31/31 e 68/68. systemd parte, esegue l'unità, journald attivo, stop e ripartenza; CentOS 8 senza `--privileged` richiede SIGKILL dopo 31 s come su un Docker normale; CentOS 7 *xfail* (systemd 219 su cgroup v2) |
 
 ### Bug trovati dai test (e corretti)
 

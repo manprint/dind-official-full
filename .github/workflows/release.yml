@@ -21,6 +21,7 @@ jobs:
   prepare:
     name: prepare
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       latest: ${{ steps.latest.outputs.latest }}
       rclone: ${{ steps.rclone.outputs.version }}
@@ -54,12 +55,13 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: shellcheck
-        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh tests/terraform.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh scripts/terraform/guest/*.sh
+        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh tests/terraform.sh tests/templates.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh scripts/terraform/guest/*.sh
 
       - name: Compose files
         run: |
@@ -86,6 +88,9 @@ jobs:
     name: build-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     needs: prepare
+    # A run takes 1-4 minutes; the cap only stops a hung one from holding the
+    # runner for the default 6 hours.
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -196,6 +201,7 @@ jobs:
     name: smoke-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     needs: build
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -263,6 +269,7 @@ jobs:
     name: manifest-${{ matrix.variant }}
     runs-on: ubuntu-24.04
     needs: [prepare, lint, smoke]
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write
@@ -329,6 +336,7 @@ jobs:
     name: github-release
     runs-on: ubuntu-24.04
     needs: [prepare, merge]
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

@@ -1,4 +1,4 @@
-FROM docker:29.9.0-dind
+FROM docker:29.9.1-dind
 
 # "current" resolves to the newest rclone at build time; CI resolves it once
 # and passes the same version to every platform build. Not RCLONE_VERSION:
@@ -81,6 +81,9 @@ RUN set -eux; \
 		tzdata \
 		unzip \
 		yq; \
+	# JAVA_HOME and PATH above name the JDK's directory by hand: a JDK bump that
+	# misses them fails here instead of shipping a broken JAVA_HOME.
+	"$JAVA_HOME/bin/javac" -version; \
 	python3 -m venv /opt/venv; \
 	/opt/venv/bin/pip install --upgrade pip setuptools wheel; \
 	ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime; \

@@ -12,9 +12,10 @@ image_full := registry / repo
 image_minimal := registry / repo + "-minimal"
 image_incus := registry / repo + "-incus"
 
-# Incus release the Dockerfile builds from source (INCUS_VERSION build arg).
+# Incus release to build from source: INCUS_VERSION from the environment, else
+# the ARG default in Dockerfile.incus (one place to bump it).
 
-incus_version := env("INCUS_VERSION", "7.5.1")
+incus_version := env("INCUS_VERSION", "")
 
 # Same default as the Dockerfiles; CI pins the version it resolved once.
 
@@ -50,7 +51,7 @@ build-incus-clean tag="latest": (_build_incus tag "--no-cache")
 
 _build_incus tag flags:
     docker build --pull {{ flags }} -f Dockerfile.incus \
-        --build-arg INCUS_VERSION={{ incus_version }} \
+        {{ if incus_version != "" { "--build-arg INCUS_VERSION=" + incus_version } else { "" } }} \
         --build-arg DIND_RCLONE_VERSION={{ rclone }} \
         -t {{ image_incus }}:{{ tag }} .
 

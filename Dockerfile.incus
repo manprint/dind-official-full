@@ -51,7 +51,7 @@ RUN set -eux; \
 FROM node:26-alpine AS ui
 # The node 26 image ships no corepack, hence no yarn; the lockfile is yarn v1.
 RUN npm install -g yarn@1.22.22
-ARG INCUS_UI_REF=f820acc33ceff552da5601472fa4e4b3ff0c0f4f
+ARG INCUS_UI_REF=8d2dd01308cfe02ab0069aacbb71c5a517e0d02e
 RUN apk add --no-cache git
 WORKDIR /src
 # vite.config.ts stamps the build with `git rev-parse`, so a checkout, not a tarball.
@@ -89,7 +89,8 @@ RUN set -eux; \
 	wget -qO SHA256SUMS "$base/tofu_${OPENTOFU_VERSION}_SHA256SUMS"; \
 	wget -qO SHA256SUMS.gpgsig "$base/tofu_${OPENTOFU_VERSION}_SHA256SUMS.gpgsig"; \
 	wget -qO opentofu.asc https://get.opentofu.org/opentofu.asc; \
-	export GNUPGHOME="$(mktemp -d)"; \
+	GNUPGHOME="$(mktemp -d)"; \
+	export GNUPGHOME; \
 	gpg --batch --quiet --import opentofu.asc; \
 	gpg --batch --export "$OPENTOFU_GPG_FINGERPRINT" > tofu.gpg; \
 	test -s tofu.gpg; \
@@ -254,7 +255,8 @@ COPY --from=tofu /out/plugins /usr/share/terraform/plugins
 RUN set -eux; \
 	incusd --version; \
 	incus --version; \
-	! ldd /usr/sbin/incusd | grep -i "not found"; \
+	# Not `! ldd … | grep`: set -e ignores a negated command, so that never failed.
+	if ldd /usr/sbin/incusd | grep -i "not found"; then exit 1; fi; \
 	lxc-start --version; \
 	lxcfs --version; \
 	dnsmasq --version | head -1; \

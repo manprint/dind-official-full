@@ -113,8 +113,10 @@ fix_runtime() {
 # 0 once the daemon answers, or when it is up but slow to answer; 1 when it
 # is gone or never created its socket.
 wait_docker() {
-	i=0
-	while [ "$i" -lt 90 ]; do
+	# A deadline, not a count of rounds: a round can take 5.5s (the daemon may
+	# accept connections long before it answers): 90 of them could last 8 minutes.
+	deadline=$(($(date +%s) + 45))
+	while [ "$(date +%s)" -lt "$deadline" ]; do
 		# Exited, or never got past the data-root lock: nothing to wait for.
 		# supervise() reports the status.
 		kill -0 "$DOCKERD_PID" 2>/dev/null || return 1
@@ -128,7 +130,6 @@ wait_docker() {
 				return 0
 			fi
 		fi
-		i=$((i + 1))
 		sleep 0.5
 	done
 	if [ -S /var/run/docker.sock ]; then

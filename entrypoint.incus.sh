@@ -171,8 +171,10 @@ run_as_alpine_child() {
 
 # 0 once the API answers, 1 when our launch has exited or never answers.
 wait_incus() {
-	i=0
-	while [ "$i" -lt 240 ]; do
+	# A deadline, not a count of rounds: a round can take 5.5s (incus info
+	# timing out): 240 of them could last 22 minutes.
+	deadline=$(($(date +%s) + 120))
+	while [ "$(date +%s)" -lt "$deadline" ]; do
 		kill -0 "$INCUSD_PID" 2>/dev/null || return 1
 		# incusd of this container, not an answer from the socket of another
 		# container on the same volume (whose pid namespace pidof cannot see).
@@ -180,7 +182,6 @@ wait_incus() {
 			echo "[incus-entrypoint] incus ready on /var/lib/incus/unix.socket"
 			return 0
 		fi
-		i=$((i + 1))
 		sleep 0.5
 	done
 	echo "[incus-entrypoint] ERROR: incus not answering after 120s" >&2

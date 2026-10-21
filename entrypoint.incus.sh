@@ -605,6 +605,10 @@ start_ui_proxy() {
 		return 0
 		;;
 	esac
+	# 127.0.0.1 only reaches a wildcard listener (":8443", "0.0.0.0:8443",
+	# "[::]:8443"); an API bound to one address is reached there (it was a 502).
+	api_host="${https%:*}"
+	case "$api_host" in "" | 0.0.0.0 | "[::]" | "::") api_host=127.0.0.1 ;; esac
 	if ! command -v nginx >/dev/null 2>&1; then
 		echo "[incus-entrypoint] WARNING: web UI proxy skipped, nginx is missing" >&2
 		return 0
@@ -672,7 +676,7 @@ http {
 		absolute_redirect off;
 		location = / { return 302 /ui/; }
 		location / {
-			proxy_pass https://127.0.0.1:$api_port;
+			proxy_pass https://$api_host:$api_port;
 			proxy_http_version 1.1;
 			proxy_ssl_certificate $crt;
 			proxy_ssl_certificate_key $key;

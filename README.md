@@ -1,6 +1,6 @@
 # dind-env
 
-`docker:29.9.0-dind` + toolchain di sviluppo. `dockerd` resta root (comportamento DinD); la sessione parte come `alpine` (uid/gid 1000).
+`docker:29.9.1-dind` + toolchain di sviluppo. `dockerd` resta root (comportamento DinD); la sessione parte come `alpine` (uid/gid 1000).
 
 Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativamente su Linux, macOS e Windows con Docker Desktop, OrbStack o WSL2. La variante Incus ([sotto](#variante-incus)) richiede un host Linux con cgroup v2 e `/dev/fuse`: su Docker Desktop, OrbStack o WSL2 non è stata provata.
 
@@ -209,7 +209,7 @@ docker build -t dind-test .
 tests/smoke.sh dind-test 3
 ```
 
-Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate a `dockerd`), `DOCKER_DAEMON_INTERNAL_BIP`, dotfile, `HOME` e prompt, lock sul data-root, `docker stop`, chiave TLS corrotta, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`, `kill -9` del PID 1 dall'host con la restart policy, ricreazione del container sugli stessi volumi. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
+Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate a `dockerd`), `DOCKER_DAEMON_INTERNAL_BIP`, dotfile, `HOME` e prompt, lock sul data-root, scadenza di 45 s con un daemon che non risponde, `docker stop`, chiave TLS corrotta, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`, `kill -9` del PID 1 dall'host con la restart policy, ricreazione del container sugli stessi volumi. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
 
 Smoke test della variante Incus: `tests/smoke.incus.sh IMAGE [CYCLES]` (`just smoke-incus TAG`). Richiede un host con cgroup v2, `/dev/fuse` e `--cap-add ALL`; il crash test (SIGKILL al PID 1 dall'host) usa anche `--privileged`, come lo smoke Docker.
 

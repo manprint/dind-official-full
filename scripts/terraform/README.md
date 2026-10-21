@@ -93,10 +93,10 @@ Gli indirizzi sono quelli di fine `apply`. Se l'indirizzo cambia (DHCP, riavvio)
 
 ## Provider e versioni
 
-**Provider `lxc/incus` 1.2.0**, l'ultima versione al momento del build:
+**Provider `lxc/incus` 1.2.1**, l'ultima versione al momento del build:
 - è già nell'immagine, in `/usr/share/terraform/plugins`, il mirror locale implicito di OpenTofu;
 - `tofu init` lo collega con un symlink e non scarica nulla (provato con `--network none`);
-- `Installed lxc/incus v1.2.0 (unauthenticated)` è normale per un mirror locale: l'integrità la verificano gli hash di `.terraform.lock.hcl`, e la firma del registry (chiave `C638974D64792D67`) è stata verificata al build.
+- `Installed lxc/incus v1.2.1 (unauthenticated)` è normale per un mirror locale: l'integrità la verificano gli hash di `.terraform.lock.hcl`, e la firma del registry (chiave `C638974D64792D67`) è stata verificata al build.
 
 **Un'altra versione del provider.** Un provider presente nel mirror si prende solo da lì, anche con `tofu init -upgrade`: una versione che il mirror non ha dà *no available releases match*. Per scaricarla dal registry serve `~/.tofurc`:
 

@@ -9,7 +9,7 @@ Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container 
 - Stessa base della variante minimal: utente `alpine` + sudo, rclone, fuse, dotfile con prompt `alpine@host(env)(branch)`, `DIND_ENVIRONMENT_NAME`.
 - Nessun Docker dentro l'immagine (Docker si installa *dentro* le istanze, vedi sotto).
 - **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 44) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: script bash e, in `terraform/`, lo stesso come template OpenTofu/Terraform. Vedi la sezione dedicata.
-- **OpenTofu 1.13.1** (`tofu`, con il completamento bash) e il provider `lxc/incus` 1.2.0 già installato: `tofu init` funziona offline.
+- **OpenTofu 1.13.1** (`tofu`, con il completamento bash) e il provider `lxc/incus` 1.2.1 già installato: `tofu init` funziona offline.
 
 Guide operative, con tutte le impostazioni, le modifiche dopo la creazione e backup/restore delle istanze: **[incus_by_script.md](incus_by_script.md)** (script bash) e **[incus_by_terraform.md](incus_by_terraform.md)** (OpenTofu/Terraform).
 
@@ -66,7 +66,7 @@ Non è `privileged: true`: bastano questi permessi, tutti già nel compose.
 | `INCUS_UI_BIND` / `INCUS_UI_PORT` | `127.0.0.1` / `8080` | indirizzo/porta host del proxy della web UI. Chi lo raggiunge è amministratore di Incus: loopback di default, `0.0.0.0` solo con `INCUS_ENV_UI_PASSWORD` |
 | `INCUS_ENV_UI_PROXY` | `on` | `off` spegne il proxy (resta la UI su 8443 con certificato nel browser) |
 | `INCUS_ENV_UI_USER` / `INCUS_ENV_UI_PASSWORD` | `admin` / — | con la password il proxy chiede HTTP basic auth; senza, nessuna autenticazione |
-| `INCUS_ENV_HTTPS_ADDRESS` | `:8443` | `core.https_address`; `none` spegne API e UI. A ogni avvio |
+| `INCUS_ENV_HTTPS_ADDRESS` | `:8443` | `core.https_address`; `none` spegne API e UI. A ogni avvio. Con un indirizzo preciso (`10.0.0.5:8443`) il proxy della UI si collega lì, altrimenti a `127.0.0.1` |
 | `INCUS_ENV_TRUST_CERT_FILE` / `_NAME` | — / `trusted-client` | certificato client (PEM, leggibile nel container) da fidare a ogni avvio con quel nome, idempotente |
 | `INCUS_ENV_SHUTDOWN_TIMEOUT` | `100` | secondi concessi allo stop di Incus (istanze, poi daemon): lo stop intero dura al massimo questo + 10 s. Un valore non numerico o 0 diventa 100, con un warning |
 | `INCUS_STOP_GRACE_PERIOD` | `120s` | `stop_grace_period` del container: oltre, Docker uccide tutto. Tienila almeno 10 s sopra `INCUS_ENV_SHUTDOWN_TIMEOUT` |
@@ -121,7 +121,7 @@ resource "incus_instance" "web" {
 }
 ```
 
-- **OpenTofu dentro il container**: `tofu` (OpenTofu 1.13.1) è nell'immagine. Il provider `lxc/incus` 1.2.0 sta nel mirror locale implicito `/usr/share/terraform/plugins`, quindi `tofu init` lo collega senza scaricare nulla (provato con `--network none`). Lì il provider usa la configurazione del client `incus` e il socket locale, come gli script, senza token né certificati. Per istanze già configurate c'è il template `/opt/incus-template/terraform` (v. *Template per creare istanze*).
+- **OpenTofu dentro il container**: `tofu` (OpenTofu 1.13.1) è nell'immagine. Il provider `lxc/incus` 1.2.1 sta nel mirror locale implicito `/usr/share/terraform/plugins`, quindi `tofu init` lo collega senza scaricare nulla (provato con `--network none`). Lì il provider usa la configurazione del client `incus` e il socket locale, come gli script, senza token né certificati. Per istanze già configurate c'è il template `/opt/incus-template/terraform` (v. *Template per creare istanze*).
 
 ## Come lanciare i container, e con quali capability
 
@@ -516,7 +516,7 @@ La correzione è `instance_privileged = false` (o `procps-ng`) più `incus resta
 - `tests/templates.sh`, per ogni template, al primo avvio e dopo un riavvio:
   - `memory.max` 2 GiB, `MemTotal` 2097152 kB, `nproc` e `/proc/cpuinfo` = 2 CPU, `free` totale 2048;
   - un processo che alloca 300 MiB compare come *usato* in `free`, `/proc/meminfo`, `memory.current` e (Alpine) `busybox top`;
-  - con `INSTANCE_SWAP=1GiB`: cgroup, `/proc/meminfo` e `free` dicono 1 GiB, e 2,4 GiB di tmpfs entrano in un'istanza da 2 GiB solo usando la swap.
+  - con `INSTANCE_SWAP=1GiB`: cgroup, `/proc/meminfo` e `free` dicono 1 GiB, e 2,4 GiB di tmpfs entrano in un'istanza da 2 GiB solo usando la swap. Questa prova prende 450–670 MiB della swap dell'host (misurati): con meno di 800 MiB liberi viene saltata (`skip`), perché l'istanza arriverebbe al limite a metà prova e il fallimento direbbe qualcosa dell'host, non del template.
 - Prove a mano (#53 della matrice): istanza privilegiata contro non privilegiata, profilo seccomp, `procps-ng`, passaggio da privilegiata a non privilegiata con Docker dentro, limite di swap oltre la swap dell'host, `limits.memory` a caldo, sintassi di `raw.lxc`.
 
 ## Stabilità: cosa fa l'entrypoint
@@ -607,6 +607,11 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 52 | HashiCorp Terraform 1.16.5 sul template (`TOFU=terraform tests/terraform.sh`): `init` da `registry.terraform.io` (stessa chiave di firma), `validate`, `fmt`, 53 test anche sulla copia configurata | OK |
 | 53 | **RAM e swap**, a mano su un container `incus-env` separato. Istanza Alpine privilegiata: profilo seccomp senza `notify`, busybox `free` = host, procps `free` = limite. Passaggio a non privilegiata con Docker dentro (`create_incus_alpine.sh`): busybox `free` = limite, container `--restart unless-stopped` e volume ripartiti, `docker run -m 64m` OK. `memory.swap.max` 4 GiB con 2 GiB di swap sull'host: `SwapTotal` 2 GiB, busybox `free` 4096. `limits.memory` cambiato a caldo; `raw.lxc` con la forma `chiave=valore` (quella con spazio rifiutata); `unset raw.lxc` → swap 0 | OK |
 | 54 | **Backup, restore, modifiche** (a mano, container `incus-env` separato; v. [incus_by_script.md](incus_by_script.md) e [incus_by_terraform.md](incus_by_terraform.md)). Script: snapshot e restore (torna anche la configurazione, Docker riparte), export con e senza snapshot, `delete` + `import` (IP fisso, limiti, snapshot, container Docker), import e `copy` accanto all'originale (MAC, IP, porta ssh da cambiare), `publish` da snapshot, device `disk` con e senza `shift=true`, `rename` da accesa rifiutato, disco su pool `dir` senza effetto, backup a freddo di `INCUS_DATA` + `ALPINE_HOME` ripristinato in altre directory. OpenTofu: snapshot a mano senza drift, `incus_instance_snapshot` (conflitto di nome, import non supportato, `destroy -target`), export/`delete`/`import` con piano *No changes*, stato perso ricostruito (`-target=terraform_data.guest` + import con `image=`) senza ricreare né riprovisionare, IP/porta/device/`instance_config`/disco cambiati sul posto, clone con i dati in un secondo stato, `destroy` che toglie anche gli snapshot manuali | OK |
+| 55 | **Revisione 2026-10-21**: build da zero (`just build-incus-clean`) con la UI aggiornata (`8d2dd01`) e il provider `lxc/incus` 1.2.1; `tests/smoke.incus.sh` | OK, 35/35 in ~100 s |
+| 56 | Proxy UI: il bundle JS (`/ui/assets/index-*.js`, 1,5 MB) e il CSS servono 200, `/1.0/events` passa a WebSocket (101); ora nello smoke test | OK |
+| 57 | `INCUS_ENV_HTTPS_ADDRESS=127.0.0.2:8443` (API su un solo indirizzo) | prima: `/ui/` e `/1.0` 502 dal proxy (puntava a `127.0.0.1`); ora 200 e `auth: trusted`, nello smoke test |
+| 58 | `tests/templates.sh` sui cinque template con l'immagine della revisione, poi `MODE=tofu` | OK: bash 80/80 in 455 s; tofu 103 OK + 2 *skip*. La prova della swap sotto pressione su Ubuntu 26.04 e Fedora, con ~400 MiB di swap libera sull'host (misurati subito dopo; il resto era di altri processi), si fermava a metà (`dd` fallito, poi `Failed to retrieve PID of executing child process`); la prova ne prende 445–668 MiB, ora sotto 800 MiB liberi viene saltata |
+| 59 | Un client `incus` finto che non risponde mai (`incusd` vero acceso): l'entrypoint rinuncia dopo la scadenza di 120 s e prosegue; ora nello smoke test (completo: 36/36 in 222 s) | OK, rinuncia dopo 122 s (prima: fino a 22 minuti, v. bug 21) |
 
 ### Bug trovati dai test (e corretti)
 
@@ -629,6 +634,10 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 17. **Configurazione saltata** se l'API non rispondeva entro l'attesa iniziale (fino al riavvio successivo), e un errore nella configurazione o nel proxy poteva terminare l'entrypoint (`set -e`), quindi il container.
 18. **`INCUS_ENV_SHUTDOWN_TIMEOUT` documentata ma non passata dal compose** (impostarla in `.env` non aveva effetto), e `090` letto come ottale (#45). Ora è nel compose, insieme a `INCUS_STOP_GRACE_PERIOD`.
 19. **Template.** `DOCKER_SOURCE=distro` (che è anche il ripiego quando il repository ufficiale non risponde) non funzionava su Ubuntu 24.04: lì `docker-compose` è la v1 in Python, senza il plugin `docker compose`, e lo script falliva alla fine. Ora gli script Ubuntu installano `docker-compose-v2` (su 26.04 `docker-compose` era già un alias di quel pacchetto). La riga finale riportava più indirizzi se un'altra istanza aveva un nome che inizia allo stesso modo (`incus list web` trova anche `web2`). Su Fedora un `LOCALE` diverso da `it_*` non installava il langpack giusto. `INSTANCE_SWAP=08GiB` veniva letto come ottale, e se `downloads.rclone.org` non rispondeva lo script si fermava senza dire perché.
+20. **Proxy UI verso l'indirizzo sbagliato.** Con `INCUS_ENV_HTTPS_ADDRESS` su un indirizzo preciso nginx si collegava comunque a `127.0.0.1`, che risponde solo a un listener su tutti gli indirizzi: UI e API dal proxy davano 502 (#57). Ora usa l'host dell'indirizzo, `127.0.0.1` solo per `:porta`, `0.0.0.0` e `[::]`.
+21. **Attesa iniziale più lunga del dichiarato.** `wait_incus` contava 240 giri da 0,5 s, ma ogni giro può durare fino a 5,5 s (`timeout 5 incus info`): i «120 s» potevano diventare 22 minuti. Ora è una scadenza a orologio, nello smoke test con un client `incus` finto che non risponde mai (al posto di quello vero, `incusd` gira). Lo stesso valeva per `wait_docker` nella variante Docker (misurato sulla v1.2.2: 482 s invece di 45 s).
+22. **Il controllo delle librerie mancanti nella build non falliva mai.** `! ldd /usr/sbin/incusd | grep "not found"` sotto `set -e`: un comando negato non fa uscire la shell, quindi una libreria mancante passava. Ora `if … then exit 1; fi`.
+23. **Falsi fallimenti possibili nei test (`pipefail` + `grep -q`).** In uno smoke test `tofu plan | grep -q 'is tainted, so it must be replaced' || fail` è fallito una volta; l'output di quel plan non era salvato e il fallimento non si è ripetuto (0/100 con la forma vecchia, 31/31 con la nuova). Causa probabile, non dimostrata: `grep -q` esce al primo match, il comando che scrive ancora muore di SIGPIPE e con `pipefail` la pipeline fallisce anche se il match c'era (meccanismo verificato: `status=141`). Valeva per tutte le pipeline verso `grep -q` nei test lato host (`docker logs`, `curl`, che esce con 23, `tofu`), in `smoke.sh`, `smoke.incus.sh` e `templates.sh`. Ora `grep -q … <<<"$(comando)"`: il comando finisce di scrivere prima che grep legga. Il check del plan ora stampa l'output quando fallisce.
 
 ### Cosa NON è stato provato
 

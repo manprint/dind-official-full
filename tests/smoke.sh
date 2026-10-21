@@ -6,7 +6,8 @@
 #   tests/smoke.sh IMAGE [CYCLES]
 #
 # Covers startup, HOME under sudo, the shell prompt, DIND_DNS (IPv4 and IPv6),
-# DOCKER_DAEMON_INTERNAL_BIP, dotfile backup, the data-root lock, graceful stop,
+# DOCKER_DAEMON_INTERNAL_BIP, dotfile backup, the data-root lock, the startup
+# deadline of a daemon that never answers, graceful stop,
 # a corrupt TLS key, CYCLES hard kills, a double SIGTERM, a dockerd crash, a
 # crash of the whole container brought back by the restart policy, and the
 # container recreated on its volumes (compose down/up).
@@ -21,18 +22,23 @@ CYCLES="${2:-3}"
 ID="dind-smoke-$$"
 MAIN="$ID-main"
 SECOND="$ID-second"
+SLOW="$ID-slow"
 DATA="$ID-data"
 HOMEV="$ID-home"
 FULL=false
 TMPD="$(mktemp -d)"
 
 cleanup() {
+	docker rm -f -v "$SLOW" >/dev/null 2>&1 || true
 	docker rm -f "$MAIN" "$SECOND" >/dev/null 2>&1 || true
 	docker volume rm -f "$DATA" "$HOMEV" >/dev/null 2>&1 || true
 	rm -rf "$TMPD"
 }
 trap cleanup EXIT
 
+# Under pipefail, `producer | grep -q` fails although grep matched when the
+# producer, still writing after grep exited, dies of SIGPIPE: grep reads a
+# captured string instead, grep -q P <<<"$(producer)".
 ok() { printf 'ok   - %s\n' "$*"; }
 
 fail() {
@@ -229,16 +235,31 @@ timeout 60 docker run --name "$SECOND" --privileged \
 	"$IMAGE" >/dev/null 2>&1 || rc=$?
 elapsed=$((SECONDS - start))
 [ "$rc" = 75 ] || fail "second container exit $rc, want 75: $(docker logs "$SECOND" 2>&1 | tail -n 5)"
-docker logs "$SECOND" 2>&1 | grep -qF 'in use by another container' || fail "second container: no lock error"
+grep -qF 'in use by another container' <<<"$(docker logs "$SECOND" 2>&1)" || fail "second container: no lock error"
 [ "$elapsed" -lt 30 ] || fail "second container took ${elapsed}s to give up"
 docker rm "$SECOND" >/dev/null
 main_undisturbed "second container"
 ok "second dockerd on the same data-root refused (exit 75 in ${elapsed}s), main untouched"
 
 out="$(docker run --rm -v "$DATA:/var/lib/docker" -v "$HOMEV:/home/alpine" "$IMAGE" sh -c 'echo cmd-ok')"
-printf '%s\n' "$out" | grep -qx cmd-ok || fail "command path: $out"
+grep -qx cmd-ok <<<"$out" || fail "command path: $out"
 main_undisturbed "command container"
 ok "command path runs next to the daemon, main untouched"
+
+# A daemon that accepts connections but never answers (a long restore after a
+# crash): the entrypoint goes on after its 45s deadline. Counted in rounds, with
+# up to 5s of `timeout 5 docker version` each, it waited 8 minutes.
+printf '#!/bin/sh\nexec sleep 10\n' >"$TMPD/docker"
+chmod 0755 "$TMPD/docker"
+docker run -d --name "$SLOW" --privileged -v "$TMPD/docker:/usr/local/bin/docker:ro" "$IMAGE" >/dev/null
+start=$SECONDS
+until grep -qF 'Docker daemon not answering after 45s, continuing' <<<"$(docker logs "$SLOW" 2>&1)"; do
+	[ $((SECONDS - start)) -lt 90 ] || fail "daemon not answering: no 'continuing' after 90s: $(docker logs "$SLOW" 2>&1 | tail -n 5)"
+	sleep 2
+done
+elapsed=$((SECONDS - start))
+docker rm -f -v "$SLOW" >/dev/null
+ok "daemon not answering: the entrypoint goes on after ${elapsed}s (deadline 45s)"
 
 terms=$(count "Processing signal 'terminated'")
 dones=$(count 'Daemon shutdown complete')

@@ -11,8 +11,8 @@
 # order, also while an operation that cannot be cancelled runs and when the API
 # does not answer), CYCLES hard kills with stale runtime files planted in the data
 # directory, lxcfs and the web UI proxy dying, a server certificate cut short, an
-# incusd crash, a double SIGTERM and a crash of the whole container brought back
-# by the restart policy. The OpenTofu template of /opt/incus-template/terraform
+# incusd crash, a double SIGTERM, a crash of the whole container brought back
+# by the restart policy, and the startup deadline of an API that never answers. The OpenTofu template of /opt/incus-template/terraform
 # too: init from the image's provider mirror, its unit tests, an instance from
 # terraform.tfvars and TF_VAR_*, an in-place change, a failed provisioning, a
 # second state on the same name, and its state still matching the instance after
@@ -28,19 +28,25 @@ CYCLES="${2:-3}"
 ID="incus-smoke-$$"
 MAIN="$ID-main"
 SECOND="$ID-second"
+ADDR="$ID-addr"
+SLOW="$ID-slow"
 # Bind mounts, like the compose file; root-owned files from the container are
 # removed from inside it.
 BASE="$(mktemp -d)"
 DATA="$BASE/data"
 HOMEV="$BASE/home"
 
-RUN_FLAGS=(
+# What the image needs to run, as in docker-compose.incus.yml.
+CAPS=(
 	--cap-add ALL
 	--security-opt apparmor=unconfined
 	--security-opt seccomp=unconfined
 	--security-opt systempaths=unconfined
 	--cgroupns private
 	--device /dev/fuse
+)
+RUN_FLAGS=(
+	"${CAPS[@]}"
 	--stop-timeout 120
 	-e DIND_ENVIRONMENT_NAME=smokeenv
 	-v "$DATA":/var/lib/incus
@@ -48,8 +54,8 @@ RUN_FLAGS=(
 )
 
 cleanup() {
-	docker rm -f "$MAIN" "$SECOND" >/dev/null 2>&1 || true
-	docker run --rm -u 0 --entrypoint sh -v "$BASE":/b "$IMAGE" -c 'rm -rf /b/data /b/home' >/dev/null 2>&1 || true
+	docker rm -f "$MAIN" "$SECOND" "$ADDR" "$SLOW" >/dev/null 2>&1 || true
+	docker run --rm -u 0 --entrypoint sh -v "$BASE":/b "$IMAGE" -c 'rm -rf /b/data /b/home /b/addr /b/slow' >/dev/null 2>&1 || true
 	rm -rf "$BASE"
 }
 trap cleanup EXIT
@@ -66,6 +72,14 @@ fail() {
 count() { docker logs "$MAIN" 2>&1 | grep -cF -- "$1" || true; }
 
 in_main() { docker exec "$MAIN" "$@"; }
+
+# Under pipefail, `producer | grep -q` fails although grep matched when the
+# producer, still writing after grep exited, dies of SIGPIPE (the likely cause
+# of one tofu plan check failing, not reproduced): grep reads a captured string
+# instead, grep -q P <<<"$(producer)".
+
+# A running stop operation of an instance, in `incus operation list -f csv`.
+stop_op_running() { awk '/Stopping instance/ && /RUNNING/ {found = 1} END {exit !found}'; }
 
 wait_ready() {
 	for _ in $(seq 1 150); do
@@ -168,15 +182,23 @@ in_main sh -c 'test -d /sys/fs/cgroup/init.scope' || fail "init.scope missing"
 ok "cgroup v2: processes in init.scope, controllers enabled"
 
 [ "$(in_main curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8443/ui/)" = 200 ] || fail "web UI not served on /ui/"
-in_main curl -sk https://127.0.0.1:8443/1.0 | grep -q '"auth":"untrusted"' || fail "API on 8443 not answering"
+grep -q '"auth":"untrusted"' <<<"$(in_main curl -sk https://127.0.0.1:8443/1.0)" || fail "API on 8443 not answering"
 ok "API and web UI on 8443 (untrusted without a certificate)"
 
 # The proxy on 8080 holds a generated, trusted certificate: no browser setup.
 [ "$(in_main curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ui/)" = 200 ] || fail "web UI proxy not serving /ui/ on 8080"
-in_main curl -s http://127.0.0.1:8080/1.0 | grep -q '"auth":"trusted"' || fail "web UI proxy is not a trusted client"
+grep -q '"auth":"trusted"' <<<"$(in_main curl -s http://127.0.0.1:8080/1.0)" || fail "web UI proxy is not a trusted client"
 [ "$(in_main curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/1.0/instances)" = 200 ] || fail "web UI proxy cannot list instances"
 [ "$(in_main sh -c 'incus config trust list --format csv | grep -c incus-ui')" = 1 ] || fail "incus-ui certificate not trusted exactly once"
-ok "web UI on 8080 without a browser certificate (proxy trusted as incus-ui)"
+# index.html alone proves little: the UI is its bundle, loaded by a script, and
+# its events and consoles go over WebSocket.
+bundle="$(in_main curl -s http://127.0.0.1:8080/ui/ | grep -oE '/ui/assets/index-[A-Za-z0-9_-]+\.js' | head -n 1 || true)"
+[ -n "$bundle" ] || fail "web UI index.html names no /ui/assets/index-*.js bundle"
+[ "$(in_main curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080$bundle")" = 200 ] || fail "web UI bundle $bundle not served"
+ws="$(in_main curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+	-H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' http://127.0.0.1:8080/1.0/events || true)"
+[ "$ws" = 101 ] || fail "web UI proxy does not upgrade /1.0/events to WebSocket (HTTP $ws)"
+ok "web UI on 8080 without a browser certificate (proxy trusted as incus-ui): bundle served, WebSocket upgraded"
 
 [ "$(count 'could not open error log file')" = 0 ] || fail "nginx complains about its error log"
 ok "web UI proxy starts without alerts"
@@ -236,10 +258,10 @@ ok "lxc.cap.keep narrows the capability set"
 
 # The template is used from a copy in the home, as documented: its state then
 # lives next to the instance's data, outside the container.
-in_main tofu version | grep -q '^OpenTofu v' || fail "tofu is not in the image"
+grep -q '^OpenTofu v' <<<"$(in_main tofu version)" || fail "tofu is not in the image"
 in_main cp -r /opt/incus-template/terraform /home/alpine/tf
 tf_run tf tofu init -no-color >/dev/null || fail "tofu init"
-in_main find /home/alpine/tf/.terraform/providers -type l -exec readlink {} + | grep -q '^/usr/share/terraform/plugins/' ||
+grep -q '^/usr/share/terraform/plugins/' <<<"$(in_main find /home/alpine/tf/.terraform/providers -type l -exec readlink {} +)" ||
 	fail "tofu init did not take the provider from the image's mirror"
 ok "OpenTofu: init takes the provider from the image, no registry"
 
@@ -295,8 +317,8 @@ tf_run tf-bad tofu init -no-color >/dev/null || fail "tofu init (tf-bad)"
 out="$(tf_run tf-bad TF_VAR_instance_name=tf-bad TF_VAR_distro=alpine TF_VAR_provision=true tofu apply -auto-approve -no-color 2>&1)" &&
 	fail "tofu: a failed provisioning did not fail the apply"
 grep -q 'apk: not found' <<<"$out" || fail "tofu: the provisioning error does not carry the script's output: $out"
-tf_run tf-bad TF_VAR_instance_name=tf-bad TF_VAR_distro=alpine TF_VAR_provision=true tofu plan -no-color 2>&1 |
-	grep -q 'is tainted, so it must be replaced' || fail "tofu: the instance of a failed provisioning is not marked for replacement"
+out="$(tf_run tf-bad TF_VAR_instance_name=tf-bad TF_VAR_distro=alpine TF_VAR_provision=true tofu plan -no-color 2>&1)" || true
+grep -q 'is tainted, so it must be replaced' <<<"$out" || fail "tofu: the instance of a failed provisioning is not marked for replacement: $out"
 tf_run tf-bad TF_VAR_instance_name=tf-bad TF_VAR_distro=alpine tofu destroy -auto-approve -no-color >/dev/null || fail "tofu destroy (tf-bad)"
 [ -z "$(in_main incus list '^tf-bad$' -c n -f csv)" ] || fail "tofu destroy left tf-bad behind"
 ok "OpenTofu: a failed provisioning fails the apply with the script's output, the instance tainted"
@@ -317,8 +339,8 @@ for _ in $(seq 1 60); do
 	sleep 1
 done
 [ "$(docker inspect -f '{{.State.ExitCode}}' "$SECOND")" = 75 ] || fail "second container on the same data directory did not exit 75"
-docker logs "$SECOND" 2>&1 | grep -q 'another incusd holds' || fail "second container did not say why"
-in_main incus list smk -c s -f csv | grep -q RUNNING || fail "first container lost its instance to the second"
+grep -q 'another incusd holds' <<<"$(docker logs "$SECOND" 2>&1)" || fail "second container did not say why"
+grep -q RUNNING <<<"$(in_main incus list smk -c s -f csv)" || fail "first container lost its instance to the second"
 in_main incus info >/dev/null || fail "first container lost its socket to the second"
 docker rm -f "$SECOND" >/dev/null
 ok "second container on the same data directory refused with 75, the first untouched"
@@ -340,10 +362,10 @@ in_main incus launch smoke slow -c boot.host_shutdown_timeout=5 >/dev/null || fa
 in_main incus exec slow -- touch /root/stubborn || fail "marking slow as stubborn"
 docker exec -d "$MAIN" incus stop slow --timeout 300
 for _ in $(seq 1 30); do
-	in_main incus operation list -f csv 2>/dev/null | grep 'Stopping instance' | grep -q RUNNING && break
+	stop_op_running <<<"$(in_main incus operation list -f csv 2>/dev/null)" && break
 	sleep 1
 done
-in_main incus operation list -f csv | grep 'Stopping instance' | grep -q RUNNING || fail "no running stop operation"
+stop_op_running <<<"$(in_main incus operation list -f csv)" || fail "no running stop operation"
 stop_in_order "docker stop during an operation"
 docker start "$MAIN" >/dev/null
 check_state "after a stop during an operation"
@@ -489,5 +511,38 @@ tf_run tf tofu plan -detailed-exitcode -no-color >/dev/null || fail "tofu: the s
 tf_run tf tofu destroy -auto-approve -no-color >/dev/null || fail "tofu destroy"
 [ -z "$(in_main incus list '^tf$' -c n -f csv)" ] || fail "tofu destroy left tf behind"
 ok "OpenTofu: after the stops and crashes the state still matches the instance; destroy removes it"
+
+# The API bound to one address: the web UI proxy must go there. It went to
+# 127.0.0.1, which only a wildcard listener answers on: 502 for everything.
+mkdir -p "$BASE/addr/data" "$BASE/addr/home"
+docker run -d --name "$ADDR" "${CAPS[@]}" -e INCUS_ENV_HTTPS_ADDRESS=127.0.0.2:8443 \
+	-v "$BASE/addr/data":/var/lib/incus -v "$BASE/addr/home":/home/alpine "$IMAGE" >/dev/null
+code=""
+for _ in $(seq 1 90); do
+	code="$(docker exec "$ADDR" curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/1.0 2>/dev/null || true)"
+	[ "$code" = 200 ] && break
+	sleep 1
+done
+[ "$code" = 200 ] || fail "web UI proxy with INCUS_ENV_HTTPS_ADDRESS=127.0.0.2:8443: HTTP $code"
+grep -q '"auth":"trusted"' <<<"$(docker exec "$ADDR" curl -s http://127.0.0.1:8080/1.0)" || fail "web UI proxy on 127.0.0.2:8443 is not a trusted client"
+docker rm -f "$ADDR" >/dev/null
+ok "web UI proxy follows an API bound to one address (127.0.0.2:8443)"
+
+# An API that never answers (a client that hangs, over the real one; incusd
+# itself runs): the entrypoint gives up after 120s of wall clock. It counted
+# rounds, and with each `timeout 5 incus info` that was up to 22 minutes.
+mkdir -p "$BASE/slow/data" "$BASE/slow/home"
+printf '#!/bin/sh\nexec sleep 10\n' >"$BASE/slow/incus"
+chmod 0755 "$BASE/slow/incus"
+docker run -d --name "$SLOW" "${CAPS[@]}" -v "$BASE/slow/incus":/usr/bin/incus:ro \
+	-v "$BASE/slow/data":/var/lib/incus -v "$BASE/slow/home":/home/alpine "$IMAGE" >/dev/null
+start=$SECONDS
+until grep -qF 'incus not answering after 120s' <<<"$(docker logs "$SLOW" 2>&1)"; do
+	[ $((SECONDS - start)) -lt 180 ] || fail "API not answering: no give-up after 180s: $(docker logs --tail 5 "$SLOW" 2>&1)"
+	sleep 2
+done
+elapsed=$((SECONDS - start))
+docker rm -f "$SLOW" >/dev/null
+ok "API not answering: the entrypoint gives up after ${elapsed}s (deadline 120s)"
 
 echo "all checks passed"

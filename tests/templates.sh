@@ -70,6 +70,9 @@ trap cleanup EXIT
 
 NAME=""
 TPL=""
+# Under pipefail, `producer | grep -q` fails although grep matched when the
+# producer, still writing after grep exited, dies of SIGPIPE: grep reads a
+# captured string instead, grep -q P <<<"$(producer)".
 ok() { printf 'ok   - %s: %s\n' "$TPL" "$*"; }
 fail() {
 	printf 'FAIL - %s: %s\n' "$TPL" "$*" >&2
@@ -204,7 +207,7 @@ booted() {
 			st="$(docker exec "$n" systemctl is-system-running 2>&1 | head -1)"
 			case "$st" in running | degraded) echo "$st"; return 0 ;; esac
 		else
-			if docker exec "$n" rc-status -r 2>/dev/null | grep -q default; then echo "default runlevel"; return 0; fi
+			if grep -q default <<<"$(docker exec "$n" rc-status -r 2>/dev/null)"; then echo "default runlevel"; return 0; fi
 		fi
 		sleep 1
 	done
@@ -417,7 +420,7 @@ verify() {
 	done
 	g 'grep -q "^user_allow_other" /etc/fuse.conf' || fail "user_allow_other"
 	g 'command -v fusermount3 || command -v fusermount' >/dev/null || fail "fusermount missing"
-	g 'rclone version | head -1' | grep -q '^rclone v' || fail "rclone does not run"
+	grep -q '^rclone v' <<<"$(g 'rclone version | head -1')" || fail "rclone does not run"
 	ok "network tools, git/curl/ssh client, rclone, fuse user_allow_other"
 
 	# alias and completion, user and root, login and not
@@ -427,14 +430,19 @@ verify() {
 		[ "$(g "su $who -s /bin/bash -c \"bash -ic 'complete | wc -l' 2>/dev/null\"")" -gt 0 ] || fail "no bash-completion for $who (non-login bash)"
 		[ "$(g "su - $who -s /bin/bash -c \"bash -lic 'complete | wc -l' 2>/dev/null\"")" -gt 0 ] || fail "no bash-completion for $who (login bash)"
 	done
-	g "su - root -c 'alias ll'" | grep -q "ls -alFh" || fail "ll in root's own login shell"
+	grep -q "ls -alFh" <<<"$(g "su - root -c 'alias ll'")" || fail "ll in root's own login shell"
 	ok "alias ll and bash-completion for $USER_T and root, login and non-login"
 
 	check_swap "first boot"
 	check_memory "first boot"
 
 	# The swap is real: 2.4GiB of tmpfs in a 2GiB instance only fits by swapping.
-	if awk 'NR > 1 {found = 1} END {exit !found}' /proc/swaps; then
+	# That takes 450-670MiB of the host's swap (measured): with less free, the
+	# instance hits its limit mid-check (seen at 396MiB free: dd failing, or incus
+	# exec with "Failed to retrieve PID of executing child process"), which says
+	# nothing about the template.
+	swap_free="$(awk '/^SwapFree:/ {print int($2 / 1024)}' /proc/meminfo)"
+	if [ "${swap_free:-0}" -ge 800 ]; then
 		g 'mkdir -p /mnt/swaptest && mount -t tmpfs -o size=3g tmpfs /mnt/swaptest && dd if=/dev/zero of=/mnt/swaptest/f bs=1M count=2400 2>/dev/null' ||
 			fail "writing 2.4GiB of tmpfs failed: no usable swap"
 		used="$(g 'cat /sys/fs/cgroup/memory.swap.current')"
@@ -442,7 +450,7 @@ verify() {
 		[ "$used" -gt 0 ] || fail "memory.swap.current is 0 after exceeding the memory limit"
 		ok "swap used under pressure ($((used / 1048576)) MiB swapped out)"
 	else
-		echo "skip - $TPL: the host has no swap, usage not tested"
+		echo "skip - $TPL: ${swap_free:-0}MiB of free swap on the host (800 needed), usage not tested"
 	fi
 
 	check_services "first boot"

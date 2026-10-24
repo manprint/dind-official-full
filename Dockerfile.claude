@@ -1,0 +1,296 @@
+FROM docker:29.9.1-dind
+
+# "current" resolves to the newest rclone at build time; CI resolves it once
+# and passes the same version to every platform build. Not RCLONE_VERSION:
+# rclone reads RCLONE_* variables as flag defaults and takes that one for
+# --version, so `rclone version` below would fail.
+ARG DIND_RCLONE_VERSION=current
+
+# Claude Code from npm. "latest" resolves at build time; pin a version to
+# rebuild the same one.
+ARG CLAUDE_CODE_VERSION=latest
+
+ENV TZ=Europe/Rome \
+	LANG=it_IT.UTF-8 \
+	LC_ALL=it_IT.UTF-8 \
+	LANGUAGE=it_IT:it
+
+# docker-init (tini) is not PID 1 here, the entrypoint is: as a subreaper it
+# still reaps dockerd's orphans, and it stops warning that it cannot.
+ENV TINI_SUBREAPER=1
+
+# The image's own tooling: the JDK (JAVA_HOME and PATH name it by hand, see
+# below) and the venv with the bash checkers. Login shells get the PATH back
+# from /etc/profile.d/00dind-path.sh.
+ENV JAVA_HOME=/usr/lib/jvm/java-25-openjdk \
+	VIRTUAL_ENV=/opt/venv \
+	PATH="/opt/venv/bin:/usr/lib/jvm/java-25-openjdk/bin:${PATH}"
+
+# The image is pinned: Claude Code's self-updater would write into the global
+# npm prefix, which belongs to root.
+ENV DISABLE_AUTOUPDATER=1
+
+# CLI update banners: noise in a pinned image.
+ENV GH_NO_UPDATE_NOTIFIER=1 \
+	GLAB_CHECK_UPDATE=false
+
+RUN set -eux; \
+	apk upgrade --no-cache; \
+	apk add --no-cache \
+		bash \
+		bash-completion \
+		bat \
+		bind-tools \
+		bridge-utils \
+		conntrack-tools \
+		coreutils \
+		curl \
+		direnv \
+		ethtool \
+		fd \
+		flock \
+		fzf \
+		fuse \
+		fuse3 \
+		git \
+		iftop \
+		iperf3 \
+		iproute2 \
+		iputils \
+		jq \
+		just \
+		lsof \
+		musl-locales \
+		musl-locales-lang \
+		mtr \
+		nano \
+		ncurses \
+		net-tools \
+		netcat-openbsd \
+		nftables \
+		ngrep \
+		nmap \
+		ripgrep \
+		shellcheck \
+		shfmt \
+		socat \
+		strace \
+		sudo \
+		tar \
+		tcpdump \
+		tmux \
+		traceroute \
+		tree \
+		tzdata \
+		unzip \
+		uv \
+		yq; \
+	ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime; \
+	echo "Europe/Rome" > /etc/timezone; \
+	touch /etc/fuse.conf; \
+	sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf; \
+	grep -q '^user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fuse.conf; \
+	printf 'export TZ=Europe/Rome\nexport LANG=it_IT.UTF-8\nexport LC_ALL=it_IT.UTF-8\nexport LANGUAGE=it_IT:it\n' > /etc/profile.d/10locale.sh; \
+	printf 'if [ -n "${BASH_VERSION:-}" ] && command -v direnv >/dev/null 2>&1; then eval "$(direnv hook bash)"; fi\n' > /etc/profile.d/20direnv.sh; \
+	apkArch="$(apk --print-arch)"; \
+	case "$apkArch" in \
+		x86_64) rcloneArch=amd64 ;; \
+		aarch64) rcloneArch=arm64 ;; \
+		armv7) rcloneArch=arm-v7 ;; \
+		*) echo >&2 "unsupported arch for rclone: $apkArch"; exit 1 ;; \
+	esac; \
+	rcloneVersion="$DIND_RCLONE_VERSION"; \
+	if [ "$rcloneVersion" = current ]; then \
+		rcloneVersion="$(wget -qO- https://downloads.rclone.org/version.txt | awk '{print $2}')"; \
+	fi; \
+	rcloneDir="rclone-${rcloneVersion}-linux-${rcloneArch}"; \
+	wget -O "/tmp/${rcloneDir}.zip" "https://downloads.rclone.org/${rcloneVersion}/${rcloneDir}.zip"; \
+	wget -O /tmp/rclone.sha256sums "https://downloads.rclone.org/${rcloneVersion}/SHA256SUMS"; \
+	(cd /tmp && grep " ${rcloneDir}\.zip\$" rclone.sha256sums | sha256sum -c -); \
+	unzip -o "/tmp/${rcloneDir}.zip" -d /tmp; \
+	install -m 0755 "/tmp/${rcloneDir}/rclone" /usr/local/bin/rclone; \
+	rm -rf "/tmp/${rcloneDir}.zip" "/tmp/${rcloneDir}" /tmp/rclone.sha256sums; \
+	rclone version; \
+	addgroup -g 1000 alpine; \
+	adduser -D -u 1000 -G alpine -h /home/alpine -s /bin/bash alpine; \
+	# root's login shell is bash too: `sudo su`, `sudo -i` and `su -` read ~/.bashrc, like `exec -u root bash`.
+	sed -i 's#^\(root:.*\):/bin/[a-z]*sh$#\1:/bin/bash#' /etc/passwd; \
+	grep -q '^root:.*:/bin/bash$' /etc/passwd; \
+	if ! getent group docker >/dev/null; then addgroup -S docker; fi; \
+	addgroup alpine docker; \
+	if getent group fuse >/dev/null; then addgroup alpine fuse; fi; \
+	printf '%s\n' \
+		'# !env_reset: the entrypoint hands DOCKER_TLS_CERTDIR & co. to dockerd-entrypoint.sh.' \
+		'# always_set_home: with the environment kept, root would inherit HOME=/home/alpine.' \
+		'Defaults:alpine !env_reset' \
+		'Defaults:alpine always_set_home' \
+		'Defaults:alpine secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+		'alpine ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/alpine; \
+	chmod 0440 /etc/sudoers.d/alpine; \
+	visudo -cf /etc/sudoers.d/alpine; \
+	mkdir -p /etc/skel; \
+	rm -rf /tmp/*
+
+# Languages and their tooling. Alpine's packages, so the versions are the
+# ones the repositories ship at build time: nodejs is the current LTS line
+# (Node 24 until the next LTS, Node 26 once it is promoted, see the Alpine
+# repositories), openjdk25 is the latest Java LTS.
+RUN set -eux; \
+	apk add --no-cache \
+		# Node, TypeScript, JavaScript, Vue
+		nodejs \
+		npm \
+		# Go
+		go \
+		delve \
+		gopls \
+		golangci-lint \
+		staticcheck \
+		# Rust
+		rust \
+		cargo \
+		rustfmt \
+		rust-clippy \
+		rust-src \
+		rust-analyzer \
+		# Java (LTS)
+		openjdk25-jdk \
+		maven \
+		gradle \
+		# PHP
+		php85 \
+		php85-cli \
+		php85-phar \
+		php85-openssl \
+		php85-curl \
+		php85-mbstring \
+		php85-xml \
+		php85-dom \
+		php85-simplexml \
+		php85-tokenizer \
+		php85-ctype \
+		php85-session \
+		php85-fileinfo \
+		php85-iconv \
+		php85-intl \
+		php85-zip \
+		php85-bcmath \
+		php85-gd \
+		php85-pdo \
+		php85-pdo_sqlite \
+		php85-sqlite3 \
+		php85-pdo_mysql \
+		php85-pdo_pgsql \
+		composer \
+		# C and C++
+		build-base \
+		clang \
+		clang-extra-tools \
+		lld \
+		lldb \
+		cmake \
+		ninja \
+		make \
+		autoconf \
+		automake \
+		libtool \
+		bison \
+		flex \
+		pkgconf \
+		linux-headers \
+		man-pages \
+		openssl-dev \
+		zlib-dev \
+		gdb \
+		valgrind \
+		ccache \
+		cppcheck \
+		doxygen \
+		# Python, for the bash checkers in the venv and for the tool calls
+		python3 \
+		python3-dev \
+		py3-pip \
+		py3-virtualenv \
+		# Bash: checkers and test runners
+		bats \
+		checkbashisms \
+		shellharden \
+		# Tools Claude Code runs through Bash and its search tools
+		findutils \
+		grep \
+		sed \
+		diffutils \
+		patch \
+		file \
+		procps-ng \
+		less \
+		bc \
+		xz \
+		zip \
+		xxd \
+		rsync \
+		openssh-client-default \
+		github-cli \
+		glab \
+		aws-cli \
+		opentofu \
+		git-lfs; \
+	# PHP comes as a versioned binary; the unversioned name is the one tools look for.
+	ln -sf /usr/bin/php85 /usr/local/bin/php; \
+	command -v clang clang-format clang-tidy php go cargo rustfmt cargo-clippy java javac mvn gradle npm node gh glab aws >/dev/null; \
+	# JAVA_HOME and PATH above name the JDK's directory by hand: a JDK bump that
+	# misses them fails here instead of shipping a broken JAVA_HOME.
+	"$JAVA_HOME/bin/javac" -version; \
+	python3 -m venv /opt/venv; \
+	/opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
+	/opt/venv/bin/pip install --no-cache-dir bashate 'headroom-ai[mcp]==0.34.0'; \
+	chown -R alpine:alpine /opt/venv; \
+	printf '# /etc/profile resets PATH: restore the image one (venv, JDK) for login shells.\nexport PATH="%s"\n' "$PATH" > /etc/profile.d/00dind-path.sh; \
+	npm install -g \
+		@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+		# typescript 7 dropped lib/tsc, which vue-tsc still loads: stay on 6.
+		typescript@6 \
+		typescript-language-server \
+		tsx \
+		eslint \
+		prettier \
+		vue-tsc \
+		@vue/language-server \
+		bash-language-server \
+		pnpm; \
+	claude --version; \
+	rm -rf /root/.npm /root/.cache /tmp/*
+
+# tokensave (code graph: MCP server and hooks named by the host's settings). Built
+# from the crate, not copied from the host: that binary is glibc, this image is musl.
+RUN set -eux; \
+	CARGO_HOME=/tmp/cargo cargo install --locked --root /usr/local --version 7.16.0 tokensave; \
+	rm -rf /tmp/cargo /tmp/*; \
+	tokensave --version; \
+	command -v uv uvx headroom >/dev/null
+
+COPY bashrc /etc/skel/.bashrc
+COPY bash_aliases /etc/skel/.bash_aliases
+COPY profile /etc/skel/.profile
+COPY entrypoint.minimal.sh /usr/local/bin/dev-entrypoint-minimal.sh
+COPY entrypoint.claude.sh /usr/local/bin/dev-entrypoint-claude.sh
+
+RUN set -eux; \
+	chmod +x /usr/local/bin/dev-entrypoint-minimal.sh /usr/local/bin/dev-entrypoint-claude.sh; \
+	install -m 0644 /etc/skel/.bashrc /root/.bashrc; \
+	install -m 0644 /etc/skel/.bash_aliases /root/.bash_aliases; \
+	install -m 0644 /etc/skel/.profile /root/.profile; \
+	ln -sfn .profile /root/.bash_profile; \
+	install -m 0644 /etc/skel/.bashrc /home/alpine/.bashrc; \
+	install -m 0644 /etc/skel/.bash_aliases /home/alpine/.bash_aliases; \
+	install -m 0644 /etc/skel/.profile /home/alpine/.profile; \
+	ln -sfn .profile /home/alpine/.bash_profile; \
+	chown alpine:alpine /home/alpine/.bashrc /home/alpine/.bash_aliases /home/alpine/.profile /home/alpine/.bash_profile
+
+VOLUME ["/var/lib/docker", "/home/alpine"]
+EXPOSE 2375 2376
+
+USER alpine
+WORKDIR /home/alpine
+ENTRYPOINT ["/usr/local/bin/dev-entrypoint-claude.sh"]
+CMD []

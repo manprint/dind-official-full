@@ -11,6 +11,7 @@ repo := env("IMAGE_REPO", `git remote get-url origin 2>/dev/null | sed -E 's/\.g
 image_full := registry / repo
 image_minimal := registry / repo + "-minimal"
 image_incus := registry / repo + "-incus"
+image_claude := registry / repo + "-claude"
 
 # Incus release to build from source: INCUS_VERSION from the environment, else
 # the ARG default in Dockerfile.incus (one place to bump it).
@@ -48,6 +49,9 @@ build-incus tag="latest": (_build_incus tag "")
 
 # Same, from scratch (no layer cache)
 build-incus-clean tag="latest": (_build_incus tag "--no-cache")
+
+# Build the Claude image (Dockerfile.claude, used by compose-claude.yml): local only, not released
+build-claude tag="latest": (_build "Dockerfile.claude" image_claude tag "")
 
 _build_incus tag flags:
     docker build --pull {{ flags }} -f Dockerfile.incus \

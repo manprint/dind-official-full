@@ -61,11 +61,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: shellcheck
-        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh tests/smoke.sh tests/smoke.incus.sh tests/terraform.sh tests/templates.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh scripts/terraform/guest/*.sh
+        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh entrypoint.claude.sh tests/smoke.sh tests/smoke.incus.sh tests/terraform.sh tests/templates.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh scripts/terraform/guest/*.sh
 
       - name: Compose files
         run: |
-          for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml docker-compose.incus.yml; do
+          for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml docker-compose.incus.yml compose-claude.yml; do
             docker compose -f "$f" config -q
           done
 
@@ -88,8 +88,9 @@ jobs:
     name: build-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     needs: prepare
-    # A run takes 1-4 minutes; the cap only stops a hung one from holding the
-    # runner for the default 6 hours.
+    # A run takes 1-4 minutes (the claude one longer: tokensave compiles from
+    # source); the cap only stops a hung one from holding the runner for the
+    # default 6 hours.
     timeout-minutes: 60
     permissions:
       contents: read
@@ -134,6 +135,18 @@ jobs:
             runner: ubuntu-24.04-arm
             platform: linux/arm64
             dockerfile: Dockerfile.incus
+          - variant: claude
+            image_suffix: "-claude"
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            dockerfile: Dockerfile.claude
+          - variant: claude
+            image_suffix: "-claude"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: Dockerfile.claude
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,7 +209,7 @@ jobs:
           retention-days: 1
 
   # The exact digest that would be tagged, on its native runner. Nothing is
-  # tagged unless all six pass.
+  # tagged unless all eight pass.
   smoke:
     name: smoke-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -239,6 +252,16 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
             script: tests/smoke.incus.sh
+          - variant: claude
+            image_suffix: "-claude"
+            arch: amd64
+            runner: ubuntu-24.04
+            script: tests/smoke.sh
+          - variant: claude
+            image_suffix: "-claude"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            script: tests/smoke.sh
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -284,6 +307,8 @@ jobs:
             image_suffix: "-minimal"
           - variant: incus
             image_suffix: "-incus"
+          - variant: claude
+            image_suffix: "-claude"
     steps:
       - name: Lowercase image name
         id: names
@@ -360,6 +385,7 @@ jobs:
             ("docker-compose.bind.yml", ""),
             ("docker-compose.minimal.bind.yml", "-minimal"),
             ("docker-compose.incus.yml", "-incus"),
+            ("compose-claude.yml", "-claude"),
           ):
             image = f"{base}{suffix}:{version}"
             p = Path(filename)
@@ -393,3 +419,4 @@ jobs:
             docker-compose.bind.yml
             docker-compose.minimal.bind.yml
             docker-compose.incus.yml
+            compose-claude.yml

@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Docker-in-Docker development image built on `docker:29.9.1-dind`. No application code — the deliverables are two Dockerfiles, two shell entrypoints, three dotfiles, three compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full`, `...-full-minimal` and `...-full-incus`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
+Docker-in-Docker development image built on `docker:29.9.1-dind`. No application code — the deliverables are four Dockerfiles, four shell entrypoints, three dotfiles, five compose files, a smoke test, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full`, `...-full-minimal`, `...-full-incus` and `...-full-claude`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
 
 README is in Italian; container locale/timezone are `it_IT.UTF-8` / `Europe/Rome`.
 
 ## Commands
 
 ```bash
-# the compose files have no build: block, they run ghcr.io/manprint/dind-official-full[-minimal]:$DIND_TAG;
+# the compose files have no build: block, they run ghcr.io/manprint/dind-official-full[-minimal|-claude]:$DIND_TAG;
 # build locally under those names first (docker compose up -d then uses the local image, no pull)
-just build            # or build-full / build-minimal; build-clean = no cache
+just build            # or build-full / build-minimal / build-claude; build-clean = no cache
 
 # full variant, named volumes
 docker compose up -d
@@ -27,6 +27,10 @@ docker compose -f docker-compose.bind.yml up -d
 DOCKER_DATA=/path/docker ALPINE_HOME=/path/home docker compose -f docker-compose.bind.yml up -d
 docker compose -f docker-compose.minimal.bind.yml up -d
 
+# claude variant: Claude Code and the language toolchains, the host's logins mounted (see Architecture).
+# Create ~/.claude.json first (touch), or the container refuses to start.
+docker compose -f compose-claude.yml up -d
+
 # a second instance next to the first: own project, name, port, data and (DIND_NET_SUBNET/DIND_IPV4/DIND_NET_GATEWAY) network
 DIND_NAME=dind-b DIND_TLS_PORT=2377 DIND_NET_SUBNET=10.10.161.0/24 DIND_IPV4=10.10.161.1 DIND_NET_GATEWAY=10.10.161.254 DOCKER_DATA=/path/b/docker ALPINE_HOME=/path/b/home \
   docker compose -p dind-b -f docker-compose.bind.yml up -d
@@ -35,7 +39,7 @@ DIND_NAME=dind-b DIND_TLS_PORT=2377 DIND_NET_SUBNET=10.10.161.0/24 DIND_IPV4=10.
 DIND_TAG=1.0.0 docker compose up -d
 
 # lint (shellcheck is on the host; shfmt only inside the image)
-shellcheck entrypoint.sh entrypoint.minimal.sh tests/smoke.sh
+shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.claude.sh tests/smoke.sh
 
 # OpenTofu template of the Incus image: in step with the bash templates, fmt, validate, unit tests (needs tofu)
 just test-terraform     # tests/terraform.sh; --fix rewrites guest/*.sh and tests/terraform.tfvars
@@ -47,11 +51,11 @@ docker build -t dind-test . && tests/smoke.sh dind-test 3
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-Compose variables: `DIND_TAG` (image tag), `DIND_NAME` (container name), `DIND_TLS_PORT` (host port for 2376), `DIND_DNS` (resolvers for the inner containers), `DOCKER_DAEMON_INTERNAL_BIP` (subnet of the inner `docker0`), `DIND_ENVIRONMENT_NAME` (label in the shell prompt), `DIND_NET_SUBNET` / `DIND_IPV4` / `DIND_NET_GATEWAY` (the compose network, default 10.10.160.0/24, container on .1, gateway on .254 because .1 is the bridge's usual gateway), and in the bind variants `DOCKER_DATA` / `ALPINE_HOME`.
+Compose variables: `DIND_TAG` (image tag), `DIND_NAME` (container name), `DIND_TLS_PORT` (host port for 2376), `DIND_DNS` (resolvers for the inner containers), `DOCKER_DAEMON_INTERNAL_BIP` (subnet of the inner `docker0`), `DIND_ENVIRONMENT_NAME` (label in the shell prompt), `DIND_NET_SUBNET` / `DIND_IPV4` / `DIND_NET_GATEWAY` (the compose network, default 10.10.160.0/24, container on .1, gateway on .254 because .1 is the bridge's usual gateway), and in the bind variants `DOCKER_DATA` / `ALPINE_HOME`. `compose-claude.yml` adds `DENY_NETWORK` and `DIND_HOST_LINKS` (see the claude variant below) and the host-path overrides of its mounts: `CLAUDE_DIR`, `CLAUDE_JSON`, `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR`, `AWS_DIR`, `GIT_CREDENTIALS`, `GITCONFIG`, `GIT_HOOKS_DIR`, `TOKENSAVE_DIR`, `SERENA_DIR`, `HEADROOM_DIR` (each defaults to the host's `$HOME` path).
 
 Port 2375 is deliberately not published: while `DOCKER_TLS_CERTDIR` keeps its dind default of `/certs`, dockerd listens on 2376 (TLS) only and nothing ever binds 2375. 2376 is loopback-only because the Docker API is root-equivalent; reaching it from the host also needs `/certs/client`, which no compose file mounts today.
 
-All three compose files also set `restart: unless-stopped`, `stop_grace_period: 60s`, a `docker version` healthcheck, json-file rotation (10m × 5) for the container's own log (which is dockerd's output), and `command: ["--log-opt", "max-size=10m", "--log-opt", "max-file=5"]`, the inner daemon's default for its containers. Those flags clash with an `/etc/docker/daemon.json` carrying `log-opts` — dockerd refuses an option given both ways — so drop `command:` when mounting one.
+The four Docker compose files (not the incus one) also set `restart: unless-stopped`, `stop_grace_period: 60s`, a `docker version` healthcheck, json-file rotation (10m × 5) for the container's own log (which is dockerd's output), and `command: ["--log-opt", "max-size=10m", "--log-opt", "max-file=5"]`, the inner daemon's default for its containers. Those flags clash with an `/etc/docker/daemon.json` carrying `log-opts` — dockerd refuses an option given both ways — so drop `command:` when mounting one.
 
 ## Testing
 
@@ -60,6 +64,8 @@ All three compose files also set `restart: unless-stopped`, `stop_grace_period: 
 Its log checks count over `docker logs`, which spans every boot of the container, so they compare deltas. A graceful stop must add exactly one `Processing signal 'terminated'` and one `Daemon shutdown complete`.
 
 The host-side tests run under `pipefail`, so none of them pipes into `grep -q`: grep exits at the first match, a producer still writing dies of SIGPIPE (curl exits 23), and the check fails although it matched (the likely cause of one failed `tofu plan` check, not reproduced in 100 tries). They read a captured string instead: `grep -q P <<<"$(producer)"`.
+
+The claude image runs the same smoke test: it has no PM2, so it takes the minimal path. Nothing in the smoke test covers `DENY_NETWORK` or `DIND_HOST_LINKS`; check those by hand when touching `entrypoint.claude.sh` (a `DENY_NETWORK` rule must drop traffic from a nested container and from the container itself, and the host's routing must be unchanged).
 
 Not covered there, check by hand when touching it: the interactive path, e.g. `script -qec "docker run --rm -it --privileged IMAGE"`. dockerd's output must go to `/var/log/dockerd.log`, not the terminal, and `exit` must stop the daemon cleanly.
 
@@ -127,7 +133,7 @@ It does nothing while a `dockerd` or `containerd` runs in the container (the scr
 
 The exec-root wipe is what decides whether a hard stop (power loss, host crash, OOM kill, `docker kill`) is survivable. Without it `/var/run/docker/containerd/containerd.pid` survives; once that pid is reused by any live process in the new PID namespace, dockerd logs "containerd is still running", waits, and exits with "timeout waiting for containerd to start". Measured with the old script: after `docker kill` + `docker start`, 5 of 6 restarts failed that way (exit 0, ~15s each); with the wipe, 0 of 24 across both variants, inner `unless-stopped` containers back every time. The upstream entrypoint only deletes `docker*.pid`, which does not match `containerd.pid`.
 
-All three compose files set `restart: unless-stopped`, so the host daemon brings the container back at boot and after a crash; it restarts on any exit code, unlike `on-failure`. `docker compose run` drops the policy for its one-off containers, so `run --rm` still works.
+All the Docker compose files set `restart: unless-stopped`, so the host daemon brings the container back at boot and after a crash; it restarts on any exit code, unlike `on-failure`. `docker compose run` drops the policy for its one-off containers, so `run --rm` still works.
 
 ### Full vs minimal
 
@@ -141,7 +147,20 @@ Both Dockerfiles run `apk upgrade --no-cache` before `apk add`: the pinned `dock
 
 PM2 exists only in the full variant, and only there does the entrypoint call `start_pm2()`: clear the stale sockets/pidfiles in `~/.pm2`, ping, `pm2 resurrect` if `~/.pm2/dump.pm2` or `dump.pm2.bak` is non-empty (resurrect falls back to the `.bak` by itself when the dump is empty or torn after a hard stop), install `pm2-logrotate` if missing, configure it, `pm2 save`. `pm2_conf()` sets an option only when `pm2 get` shows a different value: every `pm2 set` restarts the module, even with the same value. `pm2 get` prints `Value for module <name> key <key>: <value>`; if that format changes the comparison fails and the value is simply set again. Keep the boot-time save: `pm2 save` first copies the current dump to `dump.pm2.bak`, so after one boot the `.bak` holds the same list and is a real fallback; without it the `.bak` is whatever the user's previous save was (often `[]`). The Dockerfile pre-seeds a configured `.pm2` into `/etc/skel/.pm2` (installed, configured, killed, sockets stripped) so a fresh bind-mounted home gets working logrotate settings without a first-run install.
 
-Changes to shared behaviour must be applied to **both** entrypoints and **both** Dockerfiles — they are duplicated, not shared. `entrypoint.minimal.sh` is `entrypoint.sh` minus everything PM2.
+Changes to shared behaviour must be applied to **both** full and minimal entrypoints and **both** Dockerfiles — they are duplicated, not shared. `entrypoint.minimal.sh` is `entrypoint.sh` minus everything PM2.
+
+### Claude variant
+
+`Dockerfile.claude` is `Dockerfile.minimal` plus Claude Code and the tools a developer needs in a shell: Node 24 LTS, Go, Rust, OpenJDK 25 with Maven and Gradle, PHP 8.5, the C/C++ toolchain, `gh`, `glab`, `aws-cli`, OpenTofu, `just`, `direnv`, `uv`, `tokensave` and `headroom-ai[mcp]`. Claude Code comes from npm, resolved at build time by `CLAUDE_CODE_VERSION` (default `latest`); `DISABLE_AUTOUPDATER=1` because the global npm prefix belongs to root. Shared base changes (apk list, user and sudoers setup, rclone, dotfiles) go into both `Dockerfile.minimal` and `Dockerfile.claude`.
+
+- `tokensave` is built from the crate (`cargo install --locked --version 7.16.0`), not copied from the host: the host binary is glibc, this image is musl. `headroom-ai` needs the `[mcp]` extra: without it `headroom mcp serve` fails with `No module named 'httpx'`. nvm's node is glibc too and cannot run here.
+- PID 1 is the minimal entrypoint, as in every variant. `entrypoint.claude.sh` does the two jobs below and then `exec`s `dev-entrypoint-minimal.sh`, so the shutdown rules above hold unchanged.
+- **`DENY_NETWORK`** (space- or comma-separated CIDRs) adds DROP rules in this container's network namespace only, in `OUTPUT` (the container's own traffic) and `DOCKER-USER` (traffic of the nested containers, which dockerd forwards through this container; matched on destination). IPv4 entries use `iptables`, entries with `:` use `ip6tables`. The rules are set at every start, before dockerd, and a rule that cannot be set stops the container: a deny list that fails open is no deny list. The host is not touched.
+- **`DIND_HOST_LINKS`** (`HOST=CONTAINER` pairs) creates a symlink from each host path to an image tool at every start, because host settings and MCP configs name tools by their host path. A pair whose target is missing is skipped with a message. Only image tools are linked: a link inside a mounted directory would write on the host. Defaults cover node, tokensave and headroom.
+- **Host state** (`compose-claude.yml`): `~/.claude` read-write, at `/home/alpine/.claude` and at the host path too (hooks and the status line name it literally); `~/.claude.json` as a file; the `gh`, `glab` and `aws` config; `~/.git-credentials` and `~/.gitconfig` read-only; the git hooks directory read-only at its host path; `~/.tokensave`, `~/.serena` and `~/.headroom` read-write. Files and the hooks directory must exist on the host (`create_host_path: false`): Docker would create a missing source as a directory and the container would not start. The other host paths are created when missing.
+- Forge and cloud tokens are readable by everything in this container, root included. That is accepted by design; a line in the compose file keeps a login on the host only.
+- Read-only git mounts mean `git config --global` fails inside: change git config on the host.
+- `~/.tokensave` and `~/.headroom` hold SQLite databases shared with the host's tools: run one side at a time.
 
 ### Build context
 
@@ -152,11 +171,11 @@ Changes to shared behaviour must be applied to **both** entrypoints and **both**
 Tag `vX.Y.Z` triggers:
 
 1. `prepare` — decides whether the tag is the highest `vX.Y.Z` (`sort -V`); only then do the image and the GitHub release get `latest`, so a patch for an older line cannot roll it back. Resolves the rclone version once, so every platform build ships the same one.
-2. `lint` — shellcheck on the three entrypoints, both smoke tests, `tests/terraform.sh`, `tests/templates.sh` and the instance templates (bash scripts and `scripts/terraform/guest/*.sh`), `docker compose config -q` on the four compose files, then `tests/terraform.sh` with the OpenTofu release `Dockerfile.incus` pins (`setup-opentofu`, version read from `ARG OPENTOFU_VERSION`).
-3. `build` — 6 jobs (full/minimal/incus × amd64 on `ubuntu-24.04` / arm64 on `ubuntu-24.04-arm`, native runners, no QEMU), `no-cache` and `pull` on purpose: with a layer cache the `apk add` layer never changes until the Dockerfile does, and releases would keep shipping the same packages without their security fixes. Each pushes by digest only (`push-by-digest=true`, no tag) and uploads the digest as an artifact.
+2. `lint` — shellcheck on the four entrypoints, both smoke tests, `tests/terraform.sh`, `tests/templates.sh` and the instance templates (bash scripts and `scripts/terraform/guest/*.sh`), `docker compose config -q` on the five compose files, then `tests/terraform.sh` with the OpenTofu release `Dockerfile.incus` pins (`setup-opentofu`, version read from `ARG OPENTOFU_VERSION`).
+3. `build` — 8 jobs (full/minimal/incus/claude × amd64 on `ubuntu-24.04` / arm64 on `ubuntu-24.04-arm`, native runners, no QEMU; the claude build is the slowest, it compiles tokensave), `no-cache` and `pull` on purpose: with a layer cache the `apk add` layer never changes until the Dockerfile does, and releases would keep shipping the same packages without their security fixes. Each pushes by digest only (`push-by-digest=true`, no tag) and uploads the digest as an artifact.
 4. `smoke` — per variant × arch, pulls that digest on its native runner and runs `tests/smoke.sh` (`tests/smoke.incus.sh` for incus, the `script` field of the matrix entry).
 5. `merge` — needs prepare, lint and smoke. Per variant, `docker buildx imagetools create` assembles the manifest list from the digests and applies `X.Y.Z`, `X.Y`, `vX.Y.Z` and, for the highest release only, `latest` (`flavor: latest=false`, or metadata-action adds it to every semver tag by itself). A failed check leaves only untagged digests behind.
-6. `release` — rewrites all four compose files with an inline Python script that **pins `image:` to the released version** (and would strip a `build:` block, should one come back: the compose files have none today, since the build context is not part of the download), then attaches them to the GitHub Release, `make_latest` as decided by prepare.
+6. `release` — rewrites all five compose files with an inline Python script that **pins `image:` to the released version** (and would strip a `build:` block, should one come back: the compose files have none today, since the build context is not part of the download), then attaches them to the GitHub Release, `make_latest` as decided by prepare.
 
 That stamping script is indentation-sensitive: it rewrites any line starting with `    image:` and, as a guard, drops a `    build:` (4 spaces) block with its deeper-indented lines. It asserts no `build:` is left and the pinned `image:` is there, so re-indenting the `dind` service in a compose file now fails the release instead of silently breaking its assets.
 
@@ -166,7 +185,7 @@ Repo name is interpolated into the image name and lowercased in CI, so the image
 
 ## Incus variant
 
-`Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`; documented in `README_INCUS.md` (Italian, with the test matrix). Incus 7.5.1 instead of Docker: `incusd` is built from the release tarball (Alpine only ships the 7.0.1 LTS), the official web UI (`zabbly/incus-ui-canonical`, needs a git checkout and the removal of `src/types/parse-prometheus-text-format.d.ts`) is served by `incusd` from `INCUS_UI`. Released by the same pipeline as a third variant (`-incus` suffix, `Dockerfile.incus`, `tests/smoke.incus.sh`, `docker-compose.incus.yml` stamped and attached); one failing smoke blocks every variant's tags, as for the others. Dependabot does not see the `INCUS_VERSION` / `INCUS_UI_REF` / `OPENTOFU_VERSION` build args, nor `ALPINE_VERSION` behind the `FROM alpine:` lines (it reads literal tags only): bump them by hand. The Justfile passes `INCUS_VERSION` only when it is set in the environment, so the ARG default is the one place to bump. The UI pin must stay fetchable: zabbly rebases its main, and a commit no branch contains any more is fetchable by SHA only until GitHub prunes it (f820acc was in that state on 2026-10-21). Lint/smoke: `shellcheck entrypoint.incus.sh tests/smoke.incus.sh tests/terraform.sh`, `just test-terraform`, `just smoke-incus TAG`.
+`Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`; documented in `README_INCUS.md` (Italian, with the test matrix). Incus 7.5.1 instead of Docker: `incusd` is built from the release tarball (Alpine only ships the 7.0.1 LTS), the official web UI (`zabbly/incus-ui-canonical`, needs a git checkout and the removal of `src/types/parse-prometheus-text-format.d.ts`) is served by `incusd` from `INCUS_UI`. Released by the same pipeline as the `-incus` variant (`-incus` suffix, `Dockerfile.incus`, `tests/smoke.incus.sh`, `docker-compose.incus.yml` stamped and attached); one failing smoke blocks every variant's tags, as for the others. Dependabot does not see the `INCUS_VERSION` / `INCUS_UI_REF` / `OPENTOFU_VERSION` build args, nor `ALPINE_VERSION` behind the `FROM alpine:` lines (it reads literal tags only): bump them by hand. The Justfile passes `INCUS_VERSION` only when it is set in the environment, so the ARG default is the one place to bump. The UI pin must stay fetchable: zabbly rebases its main, and a commit no branch contains any more is fetchable by SHA only until GitHub prunes it (f820acc was in that state on 2026-10-21). Lint/smoke: `shellcheck entrypoint.incus.sh tests/smoke.incus.sh tests/terraform.sh`, `just test-terraform`, `just smoke-incus TAG`.
 
 - **PID 1 is tini**, the entrypoint its only child (`ENTRYPOINT ["/sbin/tini","--",…]`), so unlike the Docker entrypoints it does not need to stay PID 1 itself. It still never `exec`s in the daemon path and keeps the INT/TERM trap.
 - **Signal incusd by pidfile only** (`/run/incus-env.pid`, written by the root re-entry right before `exec incusd`, removed with the stale runtime state). `pidof incusd` / `killall incusd` also match the LXC monitors (`comm` is `incusd`, cmdline `[lxc monitor]`), which forward signals to their instance's init. Wait on `$INCUSD_PID` (the launch job lives as long as incusd: sudo waits for it), never on `pidof incusd`.

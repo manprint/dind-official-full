@@ -1,0 +1,158 @@
+services:
+  dind:
+    image: ghcr.io/manprint/dind-official-full-claude:${DIND_TAG:-latest}
+    # Built locally from Dockerfile.claude (just build-claude), or pulled: the
+    # release pipeline publishes it as the -claude variant of the image.
+    # DIND_NAME, DIND_TLS_PORT and the data paths let several instances
+    # run side by side.
+    container_name: ${DIND_NAME:-dind-env-claude}
+    hostname: dind-claude
+    privileged: true
+    # Hard stops (power loss, host crash, OOM) must bring staging back on
+    # their own: the host daemon restarts the container at boot and after
+    # a crash. Unlike on-failure, it does not depend on the exit code.
+    restart: unless-stopped
+    working_dir: /home/alpine
+    # Default log rotation for the inner containers. Drop it when mounting
+    # an /etc/docker/daemon.json with log-opts: dockerd refuses a setting
+    # given both as a flag and in the file.
+    command: ["--log-opt", "max-size=10m", "--log-opt", "max-file=5"]
+    environment:
+      TZ: Europe/Rome
+      LANG: it_IT.UTF-8
+      LC_ALL: it_IT.UTF-8
+      LANGUAGE: it_IT:it
+      # Claude Code's TUI and the copy/paste it relies on need the host's terminal type.
+      TERM: ${TERM:-xterm-256color}
+      COLORTERM: ${COLORTERM:-}
+      # Resolvers for the inner containers, e.g. "10.0.0.2 10.0.0.3". Unset,
+      # those on the inner default bridge fall back to 8.8.8.8/8.8.4.4.
+      DIND_DNS: ${DIND_DNS:-}
+      # Subnet of the inner default bridge (docker0), e.g. "10.10.100.0/24":
+      # the inner containers start on it. Unset, dockerd keeps 172.17.0.0/16.
+      DOCKER_DAEMON_INTERNAL_BIP: ${DOCKER_DAEMON_INTERNAL_BIP:-}
+      # Shown in the shell prompt as user@host(name), e.g. "myenv".
+      DIND_ENVIRONMENT_NAME: ${DIND_ENVIRONMENT_NAME:-}
+      # Networks this container and the containers nested in it may not reach,
+      # e.g. "192.168.1.0/24 100.100.0.0/16". Rules in this container's network
+      # namespace only: the host is untouched. Unset, nothing is denied.
+      DENY_NETWORK: ${DENY_NETWORK:-}
+      # Host paths the settings name literally, each linked to the image's own tool:
+      # "HOST=CONTAINER" pairs, space- or comma-separated. Override for other paths.
+      DIND_HOST_LINKS: "${DIND_HOST_LINKS:-${HOME}/.nvm/versions/node/v24.14.1/bin/node=/usr/bin/node ${HOME}/.cargo/bin/tokensave=/usr/local/bin/tokensave ${HOME}/Headroom/headroom-venv/bin/headroom=/opt/venv/bin/headroom}"
+    volumes:
+      - ${DOCKER_DATA:-./data/claude/docker}:/var/lib/docker
+      - ${ALPINE_HOME:-./data/claude/alpine-home}:/home/alpine
+      # Claude Code's login: the host's ~/.claude (OAuth credentials, settings,
+      # history) and ~/.claude.json (account state) on top of the home volume.
+      # The directory is created when missing; the file is not, because a
+      # missing source would be created as a directory: create it first
+      # (`touch ~/.claude.json`) or the container refuses to start.
+      - type: bind
+        source: ${CLAUDE_DIR:-${HOME}/.claude}
+        target: /home/alpine/.claude
+        bind:
+          create_host_path: true
+      # The same directory again at the host's own path: the hooks and the
+      # status line in settings.json name /home/<user>/.claude/... literally.
+      - type: bind
+        source: ${CLAUDE_DIR:-${HOME}/.claude}
+        target: ${HOME}/.claude
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${CLAUDE_JSON:-${HOME}/.claude.json}
+        target: /home/alpine/.claude.json
+        bind:
+          create_host_path: false
+      # Forge and cloud logins, so gh, glab and aws are already signed in:
+      # the host's tokens are readable by everything in this container, root
+      # included. Remove a line to keep that login on the host only.
+      - type: bind
+        source: ${GH_CONFIG_DIR:-${HOME}/.config/gh}
+        target: /home/alpine/.config/gh
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${GLAB_CONFIG_DIR:-${HOME}/.config/glab-cli}
+        target: /home/alpine/.config/glab-cli
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${AWS_DIR:-${HOME}/.aws}
+        target: /home/alpine/.aws
+        bind:
+          create_host_path: true
+      # Git's login: the host's .git-credentials (read by the store helper of
+      # .gitconfig) and .gitconfig, read-only: git inside cannot change them.
+      # The files and the hooks directory must exist on the host: a missing
+      # source would be created as a directory and the container would not start.
+      - type: bind
+        source: ${GIT_CREDENTIALS:-${HOME}/.git-credentials}
+        target: /home/alpine/.git-credentials
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GITCONFIG:-${HOME}/.gitconfig}
+        target: /home/alpine/.gitconfig
+        read_only: true
+        bind:
+          create_host_path: false
+      # core.hooksPath of .gitconfig names the host path literally: same path here.
+      - type: bind
+        source: ${GIT_HOOKS_DIR:-${HOME}/.config/git/hooks}
+        target: ${HOME}/.config/git/hooks
+        read_only: true
+        bind:
+          create_host_path: false
+      # Global state of the tools the host's settings start: tokensave's graph
+      # and servers, serena's memories and config, headroom's CCR store and
+      # savings. The same files as on the host, so a host tool running at the
+      # same time writes the same SQLite databases: use one side at a time.
+      - type: bind
+        source: ${TOKENSAVE_DIR:-${HOME}/.tokensave}
+        target: /home/alpine/.tokensave
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${SERENA_DIR:-${HOME}/.serena}
+        target: /home/alpine/.serena
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${HEADROOM_DIR:-${HOME}/.headroom}
+        target: /home/alpine/.headroom
+        bind:
+          create_host_path: true
+    stop_grace_period: 60s
+    # dockerd writes to this container's log: rotate it on the host.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "docker", "version"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    # Own network instead of the default one. The container takes .1, the usual
+    # gateway address, so the bridge's gateway moves to DIND_NET_GATEWAY. Two
+    # instances side by side need a different DIND_NET_SUBNET each.
+    networks:
+      dind:
+        ipv4_address: ${DIND_IPV4:-10.10.160.1}
+    ports:
+      # With DOCKER_TLS_CERTDIR set (dind default) dockerd listens on 2376
+      # only, so 2375 has no listener. Kept on loopback: the Docker API is
+      # root-equivalent and must not be reachable from the network.
+      - "127.0.0.1:${DIND_TLS_PORT:-2376}:2376"
+
+networks:
+  dind:
+    ipam:
+      config:
+        - subnet: ${DIND_NET_SUBNET:-10.10.160.0/24}
+          gateway: ${DIND_NET_GATEWAY:-10.10.160.254}

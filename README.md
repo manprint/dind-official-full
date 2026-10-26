@@ -201,6 +201,8 @@ Cose che il container non può risolvere da solo: si gestiscono fuori (host, VM,
 - **Filesystem di `DOCKER_DATA`**: deve poter fare da base a overlayfs (ext4, xfs con `ftype=1`, btrfs). NFS, CIFS, FUSE o un altro overlay non sono supportati. I named volume stanno nel `/var/lib/docker` dell'host e vanno bene.
 - **Un solo `dockerd` per data-root** (v. [Lock sul data-root](#lock-sul-data-root)): un secondo container sugli stessi dati resta fuori finché il primo non si ferma.
 - **Sicurezza**: `privileged: true` è obbligatorio per DinD e non è un confine di sicurezza (v. Note).
+- **Variante claude, `DENY_NETWORK`**: blocca gli errori, non chi vuole uscire. `alpine` ha sudo senza password, quindi una shell o Claude Code con `--dangerously-skip-permissions` può togliere le regole (`sudo iptables -F`).
+- **Variante claude, `~/.claude.json`**: il container ne usa una copia presa dall'host a ogni avvio (un bind mount del file stesso restava sul file vecchio dopo il primo salvataggio dell'host). Le modifiche fatte sull'host (un nuovo server MCP, un login) arrivano al riavvio successivo; quelle fatte nel container restano nel container e la copia successiva le sovrascrive.
 
 ## Test
 

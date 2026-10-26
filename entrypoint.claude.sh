@@ -38,18 +38,65 @@ set +f
 # and MCP config name some tools by their host path. Each HOST becomes a symlink
 # to the image's CONTAINER, so the same settings work in here. Link only tools
 # of the image: a HOST inside a mounted directory would be written on the host.
+host_link() {
+	if [ ! -x "$2" ]; then
+		echo "[dind-entrypoint] host link: $2 missing, $1 not linked"
+		return 0
+	fi
+	sudo mkdir -p "$(dirname "$1")" && sudo ln -sfn "$2" "$1" &&
+		echo "[dind-entrypoint] host link: $1 -> $2" ||
+		echo "[dind-entrypoint] host link failed: $1"
+}
+
 set -f
 for pair in $(printf '%s' "${DIND_HOST_LINKS:-}" | tr ',' ' '); do
 	host="${pair%%=*}"
 	target="${pair#*=}"
-	if [ ! -x "$target" ]; then
-		echo "[dind-entrypoint] host link: $target missing, $host not linked"
+	# A pair without "=" has host = target: ln -sfn would replace the image's
+	# tool with a link to itself, and the writable layer keeps it across restarts.
+	case "$pair" in
+	/*=/*) ;;
+	*)
+		echo "[dind-entrypoint] host link: '$pair' is not HOST=CONTAINER with absolute paths, skipped"
+		continue
+		;;
+	esac
+	if [ "$host" = "$target" ]; then
+		echo "[dind-entrypoint] host link: '$pair' links a path to itself, skipped"
 		continue
 	fi
-	sudo mkdir -p "$(dirname "$host")" && sudo ln -sfn "$target" "$host" &&
-		echo "[dind-entrypoint] host link: $host -> $target" ||
-		echo "[dind-entrypoint] host link failed: $host"
+	host_link "$host" "$target"
 done
 set +f
+
+# ~/.claude.json: a copy of the host's file, taken at every start. A bind mount
+# of the file itself pins its inode, and Claude Code saves it by writing a new
+# file and renaming it over the old one: after the host's first save the
+# container kept reading, and writing, a deleted file. A torn or non-JSON copy
+# keeps the previous one.
+claude_json_src="${DIND_CLAUDE_JSON_SRC:-/mnt/host/claude.json}"
+if [ -f "$claude_json_src" ]; then
+	tmp="/home/alpine/.claude.json.dind-env-tmp.$$"
+	if jq -e 'type == "object"' "$claude_json_src" >/dev/null 2>&1 &&
+		cp "$claude_json_src" "$tmp" && chmod 600 "$tmp" &&
+		mv -f "$tmp" /home/alpine/.claude.json; then
+		echo "[dind-entrypoint] ~/.claude.json copied from the host"
+	else
+		rm -f "$tmp"
+		echo "[dind-entrypoint] ~/.claude.json not copied from the host, the previous copy stays"
+	fi
+fi
+
+# The hooks of the host's plugins (context-mode) name nvm's node by the host's
+# version, which changes with every nvm upgrade: link every such path that the
+# settings, the plugins' hooks and the MCP config name and that is still missing.
+nvm_nodes() {
+	for f in /home/alpine/.claude/settings.json /home/alpine/.claude/plugins/cache/*/*/*/hooks/hooks.json /home/alpine/.claude.json; do
+		[ -f "$f" ] && grep -ohE '/[^"\\ ]*/\.nvm/versions/node/[^/"\\ ]+/bin/node' "$f"
+	done | sort -u
+}
+for host in $(nvm_nodes); do
+	[ -e "$host" ] || host_link "$host" /usr/bin/node
+done
 
 exec /usr/local/bin/dev-entrypoint-minimal.sh "$@"

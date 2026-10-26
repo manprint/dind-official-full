@@ -39,15 +39,18 @@ services:
       DENY_NETWORK: ${DENY_NETWORK:-}
       # Host paths the settings name literally, each linked to the image's own tool:
       # "HOST=CONTAINER" pairs, space- or comma-separated. Override for other paths.
-      DIND_HOST_LINKS: "${DIND_HOST_LINKS:-${HOME}/.nvm/versions/node/v24.14.1/bin/node=/usr/bin/node ${HOME}/.cargo/bin/tokensave=/usr/local/bin/tokensave ${HOME}/Headroom/headroom-venv/bin/headroom=/opt/venv/bin/headroom}"
+      # nvm's node needs no pair: every .nvm/versions/node/*/bin/node that the
+      # settings, the plugins' hooks or ~/.claude.json name is linked to /usr/bin/node.
+      DIND_HOST_LINKS: "${DIND_HOST_LINKS:-${HOME}/.cargo/bin/tokensave=/usr/local/bin/tokensave ${HOME}/Headroom/headroom-venv/bin/headroom=/opt/venv/bin/headroom}"
+      # Startup deadline of the MCP servers, in ms (Claude Code's default is 30000):
+      # serena runs through uvx from git and rebuilds itself after every upstream
+      # commit, which can take longer than 30 s.
+      MCP_TIMEOUT: ${MCP_TIMEOUT:-60000}
     volumes:
       - ${DOCKER_DATA:-./data/claude/docker}:/var/lib/docker
       - ${ALPINE_HOME:-./data/claude/alpine-home}:/home/alpine
       # Claude Code's login: the host's ~/.claude (OAuth credentials, settings,
-      # history) and ~/.claude.json (account state) on top of the home volume.
-      # The directory is created when missing; the file is not, because a
-      # missing source would be created as a directory: create it first
-      # (`touch ~/.claude.json`) or the container refuses to start.
+      # history) on top of the home volume, created when missing.
       - type: bind
         source: ${CLAUDE_DIR:-${HOME}/.claude}
         target: /home/alpine/.claude
@@ -60,9 +63,16 @@ services:
         target: ${HOME}/.claude
         bind:
           create_host_path: true
+      # ~/.claude.json (account state, MCP servers, projects), read-only: the
+      # entrypoint copies it into the home at every start. Mounted as the file
+      # itself it went stale at the host's first save (a rename onto a new
+      # inode). Not created when missing, since a missing source would be
+      # created as a directory: create it first (`touch ~/.claude.json`) or the
+      # container refuses to start.
       - type: bind
         source: ${CLAUDE_JSON:-${HOME}/.claude.json}
-        target: /home/alpine/.claude.json
+        target: /mnt/host/claude.json
+        read_only: true
         bind:
           create_host_path: false
       # Forge and cloud logins, so gh, glab and aws are already signed in:

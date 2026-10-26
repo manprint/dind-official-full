@@ -73,6 +73,11 @@ smoke-full tag="latest" cycles="3":
 smoke-minimal tag="latest" cycles="3":
     tests/smoke.sh {{ image_minimal }}:{{ tag }} {{ cycles }}
 
+# Smoke-test the Claude image, then what its entrypoint adds (needs --privileged)
+smoke-claude tag="latest" cycles="3":
+    tests/smoke.sh {{ image_claude }}:{{ tag }} {{ cycles }}
+    tests/claude.sh {{ image_claude }}:{{ tag }}
+
 # Smoke-test the Incus image (needs --cap-add ALL, systempaths=unconfined, cgroup v2, /dev/fuse)
 smoke-incus tag="latest" cycles="3":
     tests/smoke.incus.sh {{ image_incus }}:{{ tag }} {{ cycles }}

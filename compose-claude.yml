@@ -162,6 +162,11 @@ services:
 
 networks:
   dind:
+    # Fixed bridge name, so the host can deny on it (scripts/host-deny.sh
+    # copies DENY_NETWORK onto it: rules root in the container cannot remove).
+    # At most 15 characters; two instances need a different one each.
+    driver_opts:
+      com.docker.network.bridge.name: ${DIND_BRIDGE_NAME:-br-dind-claude}
     ipam:
       config:
         - subnet: ${DIND_NET_SUBNET:-10.10.160.0/24}

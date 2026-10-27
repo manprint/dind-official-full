@@ -39,7 +39,7 @@ DIND_NAME=dind-b DIND_TLS_PORT=2377 DIND_NET_SUBNET=10.10.161.0/24 DIND_IPV4=10.
 DIND_TAG=1.0.0 docker compose up -d
 
 # lint (shellcheck is on the host; shfmt only inside the image)
-shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.claude.sh tests/smoke.sh tests/claude.sh
+shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.claude.sh tests/smoke.sh tests/claude.sh tests/host-deny.sh scripts/host-deny.sh
 
 # OpenTofu template of the Incus image: in step with the bash templates, fmt, validate, unit tests (needs tofu)
 just test-terraform     # tests/terraform.sh; --fix rewrites guest/*.sh and tests/terraform.tfvars
@@ -47,13 +47,18 @@ just test-terraform     # tests/terraform.sh; --fix rewrites guest/*.sh and test
 # smoke test a built image (needs --privileged)
 docker build -t dind-test . && tests/smoke.sh dind-test 3
 # claude image: the smoke test, then what entrypoint.claude.sh adds
-just smoke-claude TAG   # tests/smoke.sh + tests/claude.sh
+just smoke-claude TAG   # tests/smoke.sh + tests/claude.sh + tests/host-deny.sh
+# on another runtime instead of --privileged
+DIND_RUNTIME=sysbox-runc tests/smoke.sh IMAGE 3
+
+# DENY_NETWORK of a compose enforced on the host (root; the user runs it, never the agent)
+sudo scripts/host-deny.sh apply|status|remove -f compose.yml
 
 # release: push a tag matching v[0-9]+.[0-9]+.[0-9]+
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-Compose variables: `DIND_TAG` (image tag), `DIND_NAME` (container name), `DIND_TLS_PORT` (host port for 2376), `DIND_DNS` (resolvers for the inner containers), `DOCKER_DAEMON_INTERNAL_BIP` (subnet of the inner `docker0`), `DIND_ENVIRONMENT_NAME` (label in the shell prompt), `DIND_NET_SUBNET` / `DIND_IPV4` / `DIND_NET_GATEWAY` (the compose network, default 10.10.160.0/24, container on .1, gateway on .254 because .1 is the bridge's usual gateway), and in the bind variants `DOCKER_DATA` / `ALPINE_HOME`. `compose-claude.yml` adds `DENY_NETWORK`, `DIND_HOST_LINKS` (see the claude variant below), `MCP_TIMEOUT` (Claude Code's MCP startup deadline, 60000 ms here instead of its 30000: serena runs through `uvx` from git and rebuilds after every upstream commit) and the host-path overrides of its mounts: `CLAUDE_DIR`, `CLAUDE_JSON`, `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR`, `AWS_DIR`, `GIT_CREDENTIALS`, `GITCONFIG`, `GIT_HOOKS_DIR`, `TOKENSAVE_DIR`, `SERENA_DIR`, `HEADROOM_DIR` (each defaults to the host's `$HOME` path).
+Compose variables: `DIND_TAG` (image tag), `DIND_NAME` (container name), `DIND_TLS_PORT` (host port for 2376), `DIND_DNS` (resolvers for the inner containers), `DOCKER_DAEMON_INTERNAL_BIP` (subnet of the inner `docker0`), `DIND_ENVIRONMENT_NAME` (label in the shell prompt), `DIND_NET_SUBNET` / `DIND_IPV4` / `DIND_NET_GATEWAY` (the compose network, default 10.10.160.0/24, container on .1, gateway on .254 because .1 is the bridge's usual gateway), and in the bind variants `DOCKER_DATA` / `ALPINE_HOME`. `compose-claude.yml` adds `DENY_NETWORK`, `DIND_HOST_LINKS` (see the claude variant below), `DIND_BRIDGE_NAME` (the compose network's bridge, default `br-dind-claude`, for `scripts/host-deny.sh`), `MCP_TIMEOUT` (Claude Code's MCP startup deadline, 60000 ms here instead of its 30000: serena runs through `uvx` from git and rebuilds after every upstream commit) and the host-path overrides of its mounts: `CLAUDE_DIR`, `CLAUDE_JSON`, `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR`, `AWS_DIR`, `GIT_CREDENTIALS`, `GITCONFIG`, `GIT_HOOKS_DIR`, `TOKENSAVE_DIR`, `SERENA_DIR`, `HEADROOM_DIR` (each defaults to the host's `$HOME` path).
 
 Port 2375 is deliberately not published: while `DOCKER_TLS_CERTDIR` keeps its dind default of `/certs`, dockerd listens on 2376 (TLS) only and nothing ever binds 2375. 2376 is loopback-only because the Docker API is root-equivalent; reaching it from the host also needs `/certs/client`, which no compose file mounts today.
 
@@ -68,6 +73,10 @@ Its log checks count over `docker logs`, which spans every boot of the container
 The host-side tests run under `pipefail`, so none of them pipes into `grep -q`: grep exits at the first match, a producer still writing dies of SIGPIPE (curl exits 23), and the check fails although it matched (the likely cause of one failed `tofu plan` check, not reproduced in 100 tries). They read a captured string instead: `grep -q P <<<"$(producer)"`.
 
 The claude image runs the same smoke test: it has no PM2, so it takes the minimal path. `tests/claude.sh IMAGE` (CI runs it after the smoke test of the claude digests) covers what `entrypoint.claude.sh` adds: `DIND_HOST_LINKS` (valid pairs, a pair without `=`, a relative path, a path linked to itself, a missing target, the image's tools untouched), the nvm node paths, the `~/.claude.json` copy (own 0600 file, a host save by rename reaching the next start, a non-JSON host file keeping the previous copy) and the `DENY_NETWORK` rules (both families, both chains, once each after restarts, a packet from the container dropped). Still by hand when touching it: a `DENY_NETWORK` rule must drop traffic from a nested container, and the host's routing must be unchanged.
+
+`tests/host-deny.sh IMAGE` tests `scripts/host-deny.sh` without touching the real host: a privileged container of IMAGE plays the host (own dockerd, a compose with a fixed bridge name and an agent on it, a peer netns as the LAN for the forwarded path, a dummy address as the host's own for INPUT). It covers the list and bridge read from the compose, env-only mode, both paths denied with an address outside the list still reachable, replies to host-started connections let through (it fails with the ESTABLISHED RETURN removed), status 0/1 and a stale list named, apply idempotent, a shorter list, IPv6, remove, and the refusals. CI runs it after `tests/claude.sh`.
+
+`DIND_RUNTIME=sysbox-runc` makes `tests/smoke.sh` and `tests/claude.sh` run the dind containers on that runtime instead of `--privileged` (the host-side kill helper stays privileged). Both passed on sysbox-runc 0.7.1 CE (2026-10-27); CI has no sysbox, so it runs them privileged.
 
 Not covered there, check by hand when touching it: the interactive path, e.g. `script -qec "docker run --rm -it --privileged IMAGE"`. dockerd's output must go to `/var/log/dockerd.log`, not the terminal, and `exit` must stop the daemon cleanly.
 
@@ -164,7 +173,11 @@ Changes to shared behaviour must be applied to **both** full and minimal entrypo
 - Forge and cloud tokens are readable by everything in this container, root included. That is accepted by design; a line in the compose file keeps a login on the host only.
 - Read-only git mounts mean `git config --global` fails inside: change git config on the host.
 - `~/.tokensave` and `~/.headroom` hold SQLite databases shared with the host's tools: run one side at a time. tokensave's `~/.tokensave/servers/<pid>.json` registry is reaped by pid liveness, and host and container are different PID namespaces, so each side drops the other's entries: `tokensave servers` lists one side only. `tokensave hook-stop` exits 1 with no stderr now and then (seen twice in a container session, not reproduced; nothing in this image), which Claude Code shows as a non-blocking `Stop hook error`.
-- `DENY_NETWORK` is no boundary against what runs in the container: alpine has passwordless sudo, so a shell, or Claude Code with `--dangerously-skip-permissions`, can `sudo iptables -F`. It stops mistakes, not an agent that means to get out.
+- `DENY_NETWORK` inside the container is no boundary against what runs there: alpine has passwordless sudo, so a shell, or Claude Code with `--dangerously-skip-permissions`, can `sudo iptables -F`, and so can an inner `docker run --privileged --network host` (verified, sysbox included). The boundary is **`scripts/host-deny.sh`** on the host plus a runtime that keeps container root off the host:
+  - It reads `DENY_NETWORK` of the service and the `com.docker.network.bridge.name` driver option of the network from `docker compose config` (so `.env` and defaults count; env `DENY_NETWORK` / `DIND_BRIDGE_NAME` override, both set = no compose read) and builds chain `DIND-DENY-<bridge>` in iptables and ip6tables: an `ESTABLISHED,RELATED` RETURN first (only what the container starts is denied; without it a host-started connection's replies were dropped), one DROP per network, jumped to from the top of `DOCKER-USER` (forwarded: LAN, other hosts) and `INPUT` (the host's own addresses), matched on `-i <bridge>`. Matching by interface name works before the bridge exists. apply rebuilds the chain and is idempotent, remove deletes only its chain and jumps, status exits 0 only when the rules in place are the compose's.
+  - Not persistent: `scripts/host-deny.service` runs apply `Before=docker.service` (`docker compose config` needs no daemon; dockerd keeps a `DOCKER-USER` it finds). Run by the user as root, never by the agent.
+  - `compose-claude.yml` fixes the bridge name (`DIND_BRIDGE_NAME`, default `br-dind-claude`, at most 15 characters; one per instance). A changed driver option needs the network recreated (`down` + `up`).
+  - Under `privileged: true` container root can still reach the host (block devices, modules) and undo it; under **sysbox-runc** (`runtime: sysbox-runc` instead of `privileged`, plus `devices: [/dev/fuse]` for rclone/fuse) container root is uid 165536 on the host, sees no host disk, cannot load modules, and bind mounts keep their owners (idmapped). The whole smoke test and `tests/claude.sh` pass there.
 
 ### Build context
 
@@ -175,11 +188,11 @@ Changes to shared behaviour must be applied to **both** full and minimal entrypo
 Tag `vX.Y.Z` triggers:
 
 1. `prepare` — decides whether the tag is the highest `vX.Y.Z` (`sort -V`); only then do the image and the GitHub release get `latest`, so a patch for an older line cannot roll it back. Resolves the rclone version once, so every platform build ships the same one.
-2. `lint` — shellcheck on the four entrypoints, both smoke tests, `tests/claude.sh`, `tests/terraform.sh`, `tests/templates.sh` and the instance templates (bash scripts and `scripts/terraform/guest/*.sh`), `docker compose config -q` on the five compose files, then `tests/terraform.sh` with the OpenTofu release `Dockerfile.incus` pins (`setup-opentofu`, version read from `ARG OPENTOFU_VERSION`).
+2. `lint` — shellcheck on the four entrypoints, both smoke tests, `tests/claude.sh`, `tests/host-deny.sh`, `scripts/host-deny.sh`, `tests/terraform.sh`, `tests/templates.sh` and the instance templates (bash scripts and `scripts/terraform/guest/*.sh`), `docker compose config -q` on the five compose files, then `tests/terraform.sh` with the OpenTofu release `Dockerfile.incus` pins (`setup-opentofu`, version read from `ARG OPENTOFU_VERSION`).
 3. `build` — 8 jobs (full/minimal/incus/claude × amd64 on `ubuntu-24.04` / arm64 on `ubuntu-24.04-arm`, native runners, no QEMU; the claude build is the slowest, it compiles tokensave), `no-cache` and `pull` on purpose: with a layer cache the `apk add` layer never changes until the Dockerfile does, and releases would keep shipping the same packages without their security fixes. Each pushes by digest only (`push-by-digest=true`, no tag) and uploads the digest as an artifact.
-4. `smoke` — per variant × arch, pulls that digest on its native runner and runs `tests/smoke.sh` (`tests/smoke.incus.sh` for incus, the `script` field of the matrix entry), then `tests/claude.sh` for claude.
+4. `smoke` — per variant × arch, pulls that digest on its native runner and runs `tests/smoke.sh` (`tests/smoke.incus.sh` for incus, the `script` field of the matrix entry), then `tests/claude.sh` and `tests/host-deny.sh` for claude.
 5. `merge` — needs prepare, lint and smoke. Per variant, `docker buildx imagetools create` assembles the manifest list from the digests and applies `X.Y.Z`, `X.Y`, `vX.Y.Z` and, for the highest release only, `latest` (`flavor: latest=false`, or metadata-action adds it to every semver tag by itself). A failed check leaves only untagged digests behind.
-6. `release` — rewrites all five compose files with an inline Python script that **pins `image:` to the released version** (and would strip a `build:` block, should one come back: the compose files have none today, since the build context is not part of the download), then attaches them to the GitHub Release, `make_latest` as decided by prepare.
+6. `release` — rewrites all five compose files with an inline Python script that **pins `image:` to the released version** (and would strip a `build:` block, should one come back: the compose files have none today, since the build context is not part of the download), then attaches them, with `scripts/host-deny.sh` and `scripts/host-deny.service`, to the GitHub Release, `make_latest` as decided by prepare.
 
 That stamping script is indentation-sensitive: it rewrites any line starting with `    image:` and, as a guard, drops a `    build:` (4 spaces) block with its deeper-indented lines. It asserts no `build:` is left and the pinned `image:` is there, so re-indenting the `dind` service in a compose file now fails the release instead of silently breaking its assets.
 

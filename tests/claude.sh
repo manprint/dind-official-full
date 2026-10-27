@@ -14,6 +14,7 @@
 # (IPv4 and IPv6, OUTPUT and DOCKER-USER, a packet to a denied address
 # dropped). The rest of the image is tests/smoke.sh's.
 # Needs a Docker host that allows --privileged; no registry access.
+# DIND_RUNTIME=sysbox-runc runs the container on that runtime instead.
 # Everything it creates is named dind-claude-<pid>-* and removed on exit.
 set -euo pipefail
 
@@ -24,6 +25,11 @@ DATA="$ID-data"
 HOMEV="$ID-home"
 TMPD="$(mktemp -d)"
 NVM=/home/u/.nvm/versions/node
+if [ -n "${DIND_RUNTIME:-}" ]; then
+	RUN_OPTS=(--runtime "$DIND_RUNTIME")
+else
+	RUN_OPTS=(--privileged)
+fi
 
 cleanup() {
 	docker rm -f "$MAIN" >/dev/null 2>&1 || true
@@ -73,7 +79,7 @@ chmod -R a+rX "$TMPD"
 
 docker volume create "$DATA" >/dev/null
 docker volume create "$HOMEV" >/dev/null
-docker run -d --name "$MAIN" --privileged \
+docker run -d --name "$MAIN" "${RUN_OPTS[@]}" \
 	-v "$DATA:/var/lib/docker" -v "$HOMEV:/home/alpine" \
 	-v "$TMPD/claude:/home/alpine/.claude" \
 	-v "$TMPD/claude.json:/mnt/host/claude.json:ro" \

@@ -14,6 +14,8 @@
 # Needs a Docker host that allows --privileged (the crash is a SIGKILL sent to
 # the container's PID 1 from the host PID namespace); no registry access, the
 # inner workload image is built from the dind container's own busybox.
+# DIND_RUNTIME=sysbox-runc runs the dind containers on that runtime instead of
+# --privileged (the host-side kill helper stays privileged).
 # Everything it creates is named dind-smoke-<pid>-* and removed on exit.
 set -euo pipefail
 
@@ -27,6 +29,11 @@ DATA="$ID-data"
 HOMEV="$ID-home"
 FULL=false
 TMPD="$(mktemp -d)"
+if [ -n "${DIND_RUNTIME:-}" ]; then
+	RUN_OPTS=(--runtime "$DIND_RUNTIME")
+else
+	RUN_OPTS=(--privileged)
+fi
 
 cleanup() {
 	docker rm -f -v "$SLOW" >/dev/null 2>&1 || true
@@ -124,7 +131,7 @@ docker run --rm --entrypoint sh -v "$HOMEV:/home/alpine" "$IMAGE" \
 # 2001:db8::1::2 passes a charset check but dockerd refuses it and does not
 # start: it must be dropped like the plain typo.
 create_main() {
-	docker create --name "$MAIN" --privileged --stop-timeout 60 \
+	docker create --name "$MAIN" "${RUN_OPTS[@]}" --stop-timeout 60 \
 		-e DIND_DNS="192.0.2.53, not-an-ip,198.51.100.53 2001:db8::1::2,2001:db8::53" \
 		-e DOCKER_DAEMON_INTERNAL_BIP=10.10.100.0/24 \
 		-e DIND_ENVIRONMENT_NAME=smokeenv \
@@ -230,7 +237,7 @@ PM2_PID="$(pm2_pid)"
 # turns that into a failure (124) instead of a hang.
 start=$SECONDS
 rc=0
-timeout 60 docker run --name "$SECOND" --privileged \
+timeout 60 docker run --name "$SECOND" "${RUN_OPTS[@]}" \
 	-v "$DATA:/var/lib/docker" -v "$HOMEV:/home/alpine" \
 	"$IMAGE" >/dev/null 2>&1 || rc=$?
 elapsed=$((SECONDS - start))
@@ -251,7 +258,7 @@ ok "command path runs next to the daemon, main untouched"
 # up to 5s of `timeout 5 docker version` each, it waited 8 minutes.
 printf '#!/bin/sh\nexec sleep 10\n' >"$TMPD/docker"
 chmod 0755 "$TMPD/docker"
-docker run -d --name "$SLOW" --privileged -v "$TMPD/docker:/usr/local/bin/docker:ro" "$IMAGE" >/dev/null
+docker run -d --name "$SLOW" "${RUN_OPTS[@]}" -v "$TMPD/docker:/usr/local/bin/docker:ro" "$IMAGE" >/dev/null
 start=$SECONDS
 until grep -qF 'Docker daemon not answering after 45s, continuing' <<<"$(docker logs "$SLOW" 2>&1)"; do
 	[ $((SECONDS - start)) -lt 90 ] || fail "daemon not answering: no 'continuing' after 90s: $(docker logs "$SLOW" 2>&1 | tail -n 5)"

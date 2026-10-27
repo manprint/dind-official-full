@@ -428,4 +428,3 @@ jobs:
             docker-compose.incus.yml
             compose-claude.yml
             scripts/host-deny.sh
-            scripts/host-deny.service

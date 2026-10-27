@@ -12,7 +12,10 @@
 # every start (a host save by rename reaches the container at the next start,
 # a non-JSON host file keeps the previous copy), and the DENY_NETWORK rules
 # (IPv4 and IPv6, OUTPUT and DOCKER-USER, a packet to a denied address
-# dropped). The rest of the image is tests/smoke.sh's.
+# dropped), and DENY_HOST_CHECK (no start without the host's list, with a
+# different one, or without a bridge name; a start with the same list, in
+# another order; a container down after the host's list changes). The rest of
+# the image is tests/smoke.sh's.
 # Needs a Docker host that allows --privileged; no registry access.
 # DIND_RUNTIME=sysbox-runc runs the container on that runtime instead.
 # Everything it creates is named dind-claude-<pid>-* and removed on exit.
@@ -70,12 +73,32 @@ host_save() {
 	mv -f "$TMPD/claude.json.new" "$TMPD/claude.json"
 }
 
+# What scripts/host-deny.sh writes to /run/dind-env-deny/<bridge>.
+mkdir -p "$TMPD/deny"
+printf '%s\n' 2001:db8::/32 192.0.2.0/24 >"$TMPD/deny/br-test"
 mkdir -p "$TMPD/claude/plugins/cache/mkt/plug/1.0.0/hooks"
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s/v99.1.0/bin/node /x.mjs"}]}]}}\n' "$NVM" >"$TMPD/claude/settings.json"
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\\"%s/v98.0.0/bin/node\\" \\"/y.mjs\\""}]}]}}\n' "$NVM" \
 	>"$TMPD/claude/plugins/cache/mkt/plug/1.0.0/hooks/hooks.json"
 host_save "{\"boot\":1,\"mcpServers\":{\"n\":{\"command\":\"$NVM/v97.0.0/bin/node\"}}}"
 chmod -R a+rX "$TMPD"
+
+# --- DENY_HOST_CHECK refusals: the entrypoint exits before dockerd
+refused() {
+	local out rc=0
+	out="$(docker run --rm "${RUN_OPTS[@]}" -v "$TMPD/deny:/mnt/host/deny:ro" \
+		-e DENY_HOST_CHECK=1 -e DENY_NETWORK="192.0.2.0/24,2001:db8::/32" "$@" "$IMAGE" true 2>&1)" || rc=$?
+	[ "$rc" = 1 ] || fail "started (rc $rc) $*: $out"
+	grep -qF "DENY_NETWORK is not enforced on the host" <<<"$out" || fail "refusal not reported $*: $out"
+	grep -qF "egress deny" <<<"$out" && fail "rules set before the refusal $*: $out"
+	return 0
+}
+refused -e DIND_BRIDGE_NAME=br-none
+refused
+printf '%s\n' 192.0.2.0/24 >"$TMPD/deny/br-short"
+refused -e DIND_BRIDGE_NAME=br-short
+refused -e DIND_BRIDGE_NAME=br-test -e DENY_NETWORK="192.0.2.0/24 198.51.100.0/24 2001:db8::/32"
+ok "DENY_HOST_CHECK: refused with no host list, no bridge name, a different list"
 
 docker volume create "$DATA" >/dev/null
 docker volume create "$HOMEV" >/dev/null
@@ -85,6 +108,7 @@ docker run -d --name "$MAIN" "${RUN_OPTS[@]}" \
 	-v "$TMPD/claude.json:/mnt/host/claude.json:ro" \
 	-e DIND_HOST_LINKS="/opt/ok/jq=/usr/bin/jq,/usr/bin/node relative=/usr/bin/jq /usr/bin/jq=/usr/bin/jq /opt/ok/none=/usr/bin/missing" \
 	-e DENY_NETWORK="192.0.2.0/24,2001:db8::/32" \
+	-v "$TMPD/deny:/mnt/host/deny:ro" -e DENY_HOST_CHECK=1 -e DIND_BRIDGE_NAME=br-test \
 	"$IMAGE" >/dev/null
 wait_ready
 ok "startup"
@@ -147,5 +171,22 @@ in_main nc -z -w 1 192.0.2.1 80 2>/dev/null && fail "denied address reachable"
 pkts="$(in_main sh -c 'sudo iptables -L OUTPUT -v -n -x | awk "\$3 == \"DROP\" && \$9 == \"192.0.2.0/24\" {print \$1}"')"
 [ "${pkts:-0}" -gt 0 ] || fail "packet to the denied address not dropped by OUTPUT"
 ok "DENY_NETWORK: rules in OUTPUT and DOCKER-USER, once each, packet dropped"
+
+# --- DENY_HOST_CHECK: started above with the same list in another order
+grep -qF "DENY_NETWORK enforced on the host, bridge br-test" <<<"$LOG" || fail "host check not reported at start"
+ok "DENY_HOST_CHECK: started with the host's list"
+
+# The host drops a network (or reboots: /run empty): the next start is refused.
+printf '%s\n' 192.0.2.0/24 >"$TMPD/deny/br-test"
+docker restart "$MAIN" >/dev/null
+for _ in $(seq 1 30); do
+	[ "$(docker inspect -f '{{.State.Running}}' "$MAIN")" = false ] && break
+	sleep 1
+done
+[ "$(docker inspect -f '{{.State.Running}} {{.State.ExitCode}}' "$MAIN")" = "false 1" ] ||
+	fail "container not down with exit 1 after the host's list changed"
+grep -qF "DENY_NETWORK is not enforced on the host" <<<"$(docker logs --tail 5 "$MAIN" 2>&1)" ||
+	fail "refusal not in the log"
+ok "DENY_HOST_CHECK: host list changed, the next start refused"
 
 echo "all checks passed"

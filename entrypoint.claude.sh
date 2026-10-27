@@ -14,6 +14,25 @@
 # stops the container: a deny list that fails open is no deny list.
 set -eu
 
+# DENY_HOST_CHECK=1: these rules are no boundary against root in here (sudo),
+# the host's are (scripts/host-deny.sh). It writes the list it enforces to
+# /run/dind-env-deny/<bridge>, mounted at /mnt/host/deny: start only when that
+# file holds this DENY_NETWORK. /run is empty after a reboot, so a host that has
+# not run the script since keeps the container down (restart: retried).
+if [ "${DENY_HOST_CHECK:-0}" = 1 ] && [ -n "${DENY_NETWORK:-}" ]; then
+	mark="${DENY_HOST_DIR:-/mnt/host/deny}/${DIND_BRIDGE_NAME:-}"
+	set -f
+	want="$(for cidr in $(printf '%s' "$DENY_NETWORK" | tr ',' ' '); do echo "$cidr"; done | sort -u)"
+	set +f
+	have="$(sort -u "$mark" 2>/dev/null || true)"
+	if [ -z "${DIND_BRIDGE_NAME:-}" ] || [ "$want" != "$have" ]; then
+		echo "[dind-entrypoint] ERROR: DENY_NETWORK is not enforced on the host (bridge '${DIND_BRIDGE_NAME:-}', $mark):" >&2
+		echo "[dind-entrypoint]   run on the host: sudo scripts/host-deny.sh COMPOSE" >&2
+		exit 1
+	fi
+	echo "[dind-entrypoint] DENY_NETWORK enforced on the host, bridge $DIND_BRIDGE_NAME"
+fi
+
 deny_rule() {
 	case "$1" in
 	*:*) ipt=ip6tables ;;

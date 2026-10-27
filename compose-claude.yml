@@ -35,8 +35,13 @@ services:
       DIND_ENVIRONMENT_NAME: ${DIND_ENVIRONMENT_NAME:-}
       # Networks this container and the containers nested in it may not reach,
       # e.g. "192.168.1.0/24 100.100.0.0/16". Rules in this container's network
-      # namespace only: the host is untouched. Unset, nothing is denied.
+      # namespace only: root in here (sudo) can remove them. Unset, nothing is denied.
       DENY_NETWORK: ${DENY_NETWORK:-}
+      # 1: with DENY_NETWORK set, start only when the host enforces the same list
+      # on the bridge (sudo scripts/host-deny.sh compose-claude.yml, after every
+      # boot and every change of the list). 0: the rules in here only.
+      DENY_HOST_CHECK: ${DENY_HOST_CHECK:-1}
+      DIND_BRIDGE_NAME: ${DIND_BRIDGE_NAME:-br-dind-claude}
       # Host paths the settings name literally, each linked to the image's own tool:
       # "HOST=CONTAINER" pairs, space- or comma-separated. Override for other paths.
       # nvm's node needs no pair: every .nvm/versions/node/*/bin/node that the
@@ -75,6 +80,14 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # What scripts/host-deny.sh enforces on the host, for DENY_HOST_CHECK.
+      # Read-only; /run is empty after a reboot until the script runs again.
+      - type: bind
+        source: /run/dind-env-deny
+        target: /mnt/host/deny
+        read_only: true
+        bind:
+          create_host_path: true
       # Forge and cloud logins, so gh, glab and aws are already signed in:
       # the host's tokens are readable by everything in this container, root
       # included. Remove a line to keep that login on the host only.

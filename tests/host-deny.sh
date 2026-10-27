@@ -14,7 +14,9 @@
 # host starts still let through, the list written to /run/dind-env-deny/<bridge>
 # for DENY_HOST_CHECK, apply idempotent, a shorter list dropping a network,
 # IPv6 rules, remove restoring reachability and leaving no chain or list behind,
-# and the refusals (no bridge name, a name over 15 characters, no root).
+# the refusals (no bridge name, a name over 15 characters, no root), and
+# claude-start.sh / claude-stop.sh (rules then container up, container down
+# then rules gone).
 # Needs a Docker host that allows --privileged; no registry access.
 # Everything it creates is named dind-hostdeny-<pid>-* and removed on exit.
 set -euo pipefail
@@ -162,5 +164,17 @@ on_host iptables -n -L DOCKER-USER >/dev/null || fail "remove took DOCKER-USER a
 on_host test ! -e /run/dind-env-deny/br-hd-test || fail "list file left after remove"
 on_host test -d /run/dind-env-deny || fail "remove took the list directory away"
 ok "remove: reachable again, no rule, chain or list left, DOCKER-USER and the directory kept"
+
+# --- claude-start.sh / claude-stop.sh on the same compose (project hd: its directory)
+on_host docker compose -p hd -f /hd/compose.yml down >/dev/null 2>&1
+on_host /work/scripts/claude-start.sh /hd/compose.yml >/dev/null 2>&1 || fail "claude-start.sh failed"
+[ "$(on_host docker inspect -f '{{.State.Running}}' hd-dind-1)" = true ] || fail "claude-start.sh: container not running"
+reach 198.51.100.2 8080 && fail "claude-start.sh: denied address reachable"
+on_host test -s /run/dind-env-deny/br-hd-test || fail "claude-start.sh: no list file"
+on_host /work/scripts/claude-stop.sh /hd/compose.yml >/dev/null 2>&1 || fail "claude-stop.sh failed"
+on_host docker inspect hd-dind-1 >/dev/null 2>&1 && fail "claude-stop.sh: container left"
+grep -qF DIND-DENY <<<"$(on_host iptables-save)" && fail "claude-stop.sh: rules left"
+on_host test ! -e /run/dind-env-deny/br-hd-test || fail "claude-stop.sh: list file left"
+ok "claude-start.sh: rules then container; claude-stop.sh: container then rules"
 
 echo "all checks passed"

@@ -8,6 +8,7 @@ Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativament
 ghcr.io/manprint/dind-official-full           # completa
 ghcr.io/manprint/dind-official-full-minimal   # minimal
 ghcr.io/manprint/dind-official-full-incus     # Incus al posto di Docker, v. README_INCUS.md
+ghcr.io/manprint/dind-official-full-claude    # minimal + Claude Code e toolchain, v. Variante claude
 ```
 
 ## Download ultima release
@@ -44,6 +45,15 @@ docker compose -f docker-compose.incus.yml up -d
 ```bash
 wget -qO docker-compose.incus.yml https://github.com/manprint/dind-official-full/releases/latest/download/docker-compose.incus.yml
 docker compose -f docker-compose.incus.yml up -d
+```
+
+Variante claude (v. [Variante claude](#variante-claude)), con gli script per il blocco di rete sul host:
+
+```bash
+for f in compose-claude.yml host-deny.sh claude-start.sh claude-stop.sh; do
+  curl -fsSLO https://github.com/manprint/dind-official-full/releases/latest/download/$f
+done
+chmod +x host-deny.sh claude-start.sh claude-stop.sh
 ```
 
 I compose della release hanno l'immagine fissata alla versione; ci sono anche `docker-compose.yml` (named volumes). Nei file scaricati `DIND_TAG` e `INCUS_TAG` non hanno effetto: per un'altra versione si scarica il file dalla release di quel tag.
@@ -230,6 +240,66 @@ Smoke test della variante Incus: `tests/smoke.incus.sh IMAGE [CYCLES]` (`just sm
 - `tar` e `coreutils` GNU al posto degli applet busybox
 
 La versione minimal mantiene la logica DinD, l'utente `alpine`, sudo, rclone, fuse e la gestione dei bind mount, ma non installa Rust, GitHub CLI, toolchain C/C++, Node.js/npm, PM2, Java, Python, TypeScript o Angular CLI.
+
+## Variante claude
+
+L'immagine `ghcr.io/manprint/dind-official-full-claude` è la minimal più Claude Code e gli strumenti per lavorarci dalla shell: Node 24, Go, Rust, OpenJDK 25 con Maven e Gradle, PHP 8.5, toolchain C/C++, `gh`, `glab`, `aws-cli`, OpenTofu, `just`, `direnv`, `uv`, `tokensave` e `headroom`. `compose-claude.yml` monta i login e lo stato dell'host, così Claude Code, `gh`, `glab`, `aws` e git partono già autenticati.
+
+### Avvio e stop
+
+```bash
+touch ~/.claude.json          # deve esistere: altrimenti il container non parte
+./claude-start.sh             # host-deny.sh (sudo), poi docker compose up -d
+docker compose -f compose-claude.yml exec dind bash
+./claude-stop.sh              # docker compose down, poi le regole del host tolte (sudo)
+```
+
+Senza argomenti gli script usano `compose-claude.yml` accanto a loro (o nella cartella superiore, come nel repository); `./claude-start.sh mio-compose.yml` ne usa un altro. `host-deny.sh` deve stare nella stessa cartella degli script.
+
+Le regole sul host non sopravvivono al reboot: dopo ogni riavvio, e dopo ogni modifica di `DENY_NETWORK`, va rilanciato `./claude-start.sh` (o `sudo ./host-deny.sh compose-claude.yml`). Fino ad allora il container, se `DENY_NETWORK` non è vuoto, non parte: la restart policy lo riprova e nel log compare `DENY_NETWORK is not enforced on the host`.
+
+### Blocco di rete
+
+`DENY_NETWORK` elenca le reti che il container e i container al suo interno non possono raggiungere (es. `"192.168.1.0/24 100.64.0.0/10"`, anche separate da virgola). Le regole sono su due livelli:
+
+- **nel container** (`iptables` in `OUTPUT` e `DOCKER-USER`), messe a ogni avvio: fermano gli errori, ma root nel container (sudo senza password) le può togliere;
+- **sul host** (`host-deny.sh`): una catena `DIND-DENY-<bridge>` sul bridge della rete compose, che dal container non si raggiunge. Lo script legge `DENY_NETWORK` e il nome del bridge da `docker compose config`, quindi copia esattamente le reti del compose. Le risposte alle connessioni aperte dal host passano.
+
+`host-deny.sh` scrive la lista applicata in `/run/dind-env-deny/<bridge>`; il container la vede in sola lettura e, con `DENY_HOST_CHECK=1`, si rifiuta di partire se non coincide con il proprio `DENY_NETWORK`. Il controllo dice che lo script è girato dopo l'ultimo boot con quella lista, non che nessuno abbia svuotato il firewall del host nel frattempo.
+
+Con `privileged: true` root nel container può comunque arrivare all'host e togliere anche quelle regole. Per un confine vero serve [sysbox](https://github.com/nestybox/sysbox): nel compose `runtime: sysbox-runc` al posto di `privileged: true`, più il device per fuse/rclone:
+
+```yaml
+    runtime: sysbox-runc
+    devices:
+      - /dev/fuse
+```
+
+Sotto sysbox root nel container è un utente non privilegiato sul host, non vede i dischi del host e non carica moduli; i bind mount mantengono i proprietari. Smoke test e test della variante passano anche lì.
+
+Le reti interne non devono cadere in `DENY_NETWORK`, altrimenti le risposte ai container interni vengono scartate e restano senza rete: `DOCKER_DAEMON_INTERNAL_BIP` (es. `10.200.0.0/24`) e, per le reti create dentro (`docker network create`, compose interni), un `--default-address-pool` nel `command:`, es. `"--default-address-pool", "base=10.201.0.0/16,size=24"`. I pool di default di `dockerd` (`172.17–31.0.0/16`, `192.168.0.0/16`) si sovrappongono facilmente a reti LAN.
+
+### Variabili
+
+| Variabile | Default | Uso |
+| --- | --- | --- |
+| `DENY_NETWORK` | vuoto | reti bloccate, v. sopra; vuoto = nessun blocco e nessun controllo sul host |
+| `DENY_HOST_CHECK` | `1` | `1`: con `DENY_NETWORK` impostato parte solo se il host applica la stessa lista; `0`: solo le regole nel container |
+| `DIND_BRIDGE_NAME` | `br-dind-claude` | nome del bridge della rete compose, su cui lavora `host-deny.sh`; max 15 caratteri, uno per istanza (cambiarlo richiede `down` + `up`) |
+| `DIND_HOST_LINKS` | tokensave, headroom | coppie `HOST=CONTAINER`: percorsi del host citati nei settings, collegati agli strumenti dell'immagine |
+| `MCP_TIMEOUT` | `60000` | ms di avvio concessi ai server MCP (serena via `uvx` da git può superare i 30 s di default) |
+| `CLAUDE_DIR`, `CLAUDE_JSON`, `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR`, `AWS_DIR`, `GIT_CREDENTIALS`, `GITCONFIG`, `GIT_HOOKS_DIR`, `TOKENSAVE_DIR`, `SERENA_DIR`, `HEADROOM_DIR` | percorsi in `$HOME` | percorsi sul host dei mount |
+
+Valgono anche le variabili della tabella generale (`DIND_NAME`, `DIND_TLS_PORT`, `DIND_NET_SUBNET`, …).
+
+### Stato del host
+
+- `~/.claude` in lettura e scrittura, anche al percorso del host (hook e status line lo citano per esteso).
+- `~/.claude.json` copiato nella home a ogni avvio: le modifiche del host (un server MCP, un login) arrivano al riavvio, quelle fatte nel container restano nel container.
+- `~/.config/gh`, `~/.config/glab-cli`, `~/.aws`: i token sono leggibili da tutto ciò che gira nel container, root compreso. Per tenere un login solo sul host basta togliere la riga dal compose.
+- `~/.git-credentials`, `~/.gitconfig` e la cartella degli hook git in sola lettura: `git config --global` dentro fallisce, la configurazione git si cambia sul host. Per `gh` con il token nel file (`gh auth login --insecure-storage`) e non nel keyring, altrimenti il container non lo vede.
+- `~/.tokensave`, `~/.serena`, `~/.headroom` condivisi con il host: tokensave e headroom usano database SQLite, quindi meglio una parte alla volta.
+- I `node` di nvm citati da settings, hook dei plugin e `~/.claude.json` vengono collegati a `/usr/bin/node` (il node di nvm è glibc e qui non gira).
 
 ## Variante Incus
 

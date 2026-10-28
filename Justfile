@@ -91,6 +91,10 @@ templates-incus tag="latest" *templates:
 templates-incus-tofu tag="latest" *templates:
     MODE=tofu tests/templates.sh {{ image_incus }}:{{ tag }} {{ templates }}
 
+# Nested Docker workloads in an instance through compose restart, stop/start, down/up and a crash (needs internet): just nested-incus latest alpine
+nested-incus tag="latest" template="debian13":
+    tests/nested.incus.sh {{ image_incus }}:{{ tag }} {{ template }}
+
 # OpenTofu template: in step with the bash templates, fmt, validate, unit tests (needs tofu; --fix rewrites guest/*.sh and tests/terraform.tfvars; TOFU=terraform for HashiCorp Terraform)
 test-terraform *args:
     tests/terraform.sh {{ args }}

@@ -253,10 +253,14 @@ fi
 
 if is_true "$INSTALL_DOCKER"; then
 	say "docker ($DOCKER_SOURCE)"
+	# iptables-nft with Docker, not only with the network tools: alone, Docker
+	# pulls in iptables-legacy, whose tables (raw, nat…) are kernel modules an
+	# instance cannot load: on a host without them every `docker run` failed
+	# ("can't initialize iptables table `raw'").
 	installed=false
 	if [ "$DOCKER_SOURCE" = official ]; then
 		if curl -fsSL https://download.docker.com/linux/fedora/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo; then
-			if dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+			if dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin iptables-nft; then
 				installed=true
 			else
 				say "the official Docker repository failed, falling back to the distro packages"
@@ -265,7 +269,7 @@ if is_true "$INSTALL_DOCKER"; then
 		fi
 	fi
 	if [ "$installed" != true ]; then
-		dnf install -y -q moby-engine docker-compose
+		dnf install -y -q moby-engine docker-compose iptables-nft
 	fi
 	mkdir -p /etc/docker
 	cat >/etc/docker/daemon.json <<EOF

@@ -75,6 +75,12 @@ services:
       # Seconds a stop gives `incus admin shutdown` (instances, then the daemon).
       # The whole stop takes at most this + 10s: keep stop_grace_period above it.
       INCUS_ENV_SHUTDOWN_TIMEOUT: ${INCUS_ENV_SHUTDOWN_TIMEOUT:-100}
+      # The host's per-user kernel limits (inotify, keyring, map count, aio)
+      # are raised to Incus' production values at every start, never lowered:
+      # with the defaults a handful of systemd instances with Docker exhaust
+      # them. They are global, so this changes the host; "off" leaves them to
+      # the host (set them there with sysctl, see README_INCUS.md).
+      INCUS_ENV_HOST_SYSCTL: ${INCUS_ENV_HOST_SYSCTL:-on}
     volumes:
       # Bind mounts: INCUS_DATA holds the database, the images and the instances
       # (the `dir` storage pool lives here), ALPINE_HOME the home of alpine.
@@ -96,6 +102,9 @@ services:
       interval: 30s
       timeout: 10s
       start_period: 120s
+      # Checked every 5s during start_period (Docker 25+): healthy within
+      # seconds of the start, not after the first 30s interval.
+      start_interval: 5s
       retries: 3
     networks:
       incus:

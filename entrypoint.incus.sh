@@ -188,6 +188,14 @@ wait_incus() {
 	return 1
 }
 
+# To the daemon only, never by name (see INCUSD_PIDFILE); fails while the
+# pidfile names no incusd yet.
+signal_incusd() {
+	pid="$(cat "$INCUSD_PIDFILE" 2>/dev/null || true)"
+	[ -n "$pid" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = incusd ] || return 1
+	as_root kill "-$1" "$pid" 2>/dev/null || true
+}
+
 # Exactly one graceful request: `incus admin shutdown` stops the instances
 # (each within its boot.host_shutdown_timeout, as many at a time as there are
 # CPUs) and then the daemon. --force only skips waiting for the running
@@ -201,17 +209,21 @@ stop_incusd() {
 	kill -0 "$INCUSD_PID" 2>/dev/null || return 0
 	echo "[incus-entrypoint] stopping incus (instances first, up to ${SHUTDOWN_TIMEOUT}s)"
 	deadline=$(($(date +%s) + SHUTDOWN_TIMEOUT))
+	pwr=""
 	if ! out="$(timeout $((SHUTDOWN_TIMEOUT + 5)) incus admin shutdown --force --timeout "$SHUTDOWN_TIMEOUT" 2>&1)"; then
 		echo "[incus-entrypoint] shutdown through the API failed (${out:-no answer}), sending SIGPWR" >&2
-		# To the daemon only, never by name (see INCUSD_PIDFILE). A shutdown
-		# already under way ignores it and keeps its time below.
-		pid="$(cat "$INCUSD_PIDFILE" 2>/dev/null || true)"
-		if [ -n "$pid" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = incusd ]; then
-			as_root kill -PWR "$pid" 2>/dev/null || true
-		fi
+		pwr=0
 	fi
 	# Our launch lives as long as incusd does: sudo waits for it.
 	while kill -0 "$INCUSD_PID" 2>/dev/null && [ "$(date +%s)" -lt $((deadline + 5)) ]; do
+		# Sent again every 5s, not once: a stop in the first seconds finds no
+		# incusd yet (the root side is still setting up) or one that has not
+		# installed its handlers, which drops the signal; it then ran on for the
+		# whole timeout and died with the container. Once it has the first, the
+		# others are dropped.
+		if [ -n "$pwr" ] && [ "$(date +%s)" -ge "$pwr" ] && signal_incusd PWR; then
+			pwr=$(($(date +%s) + 5))
+		fi
 		sleep 0.5
 	done
 	if kill -0 "$INCUSD_PID" 2>/dev/null; then
@@ -382,6 +394,35 @@ setup_cgroups() {
 	done
 }
 
+# Per-user kernel limits of the host, in Incus' production values. Every
+# unprivileged instance's root is the same host uid, and the user namespaces
+# Incus creates are charged to host root, so the defaults are shared by all of
+# them: with fs.inotify.max_user_instances=128 the 5th Debian instance with
+# Docker died at boot (systemd: "Failed to create control group inotify
+# object: Too many open files"), and kernel.keys.maxkeys=200 stopped the 200th
+# nested container across all instances ("unable to join session keyring").
+# These sysctls are global: written here (cap_add ALL, systempaths=unconfined)
+# they change the host's, so only raised, never lowered, and logged.
+# INCUS_ENV_HOST_SYSCTL=off leaves them to the host.
+raise_host_limits() {
+	case "${INCUS_ENV_HOST_SYSCTL:-on}" in off | none | false | no | 0) return 0 ;; esac
+	for kv in fs/inotify/max_user_instances=1048576 fs/inotify/max_user_watches=1048576 \
+		fs/inotify/max_queued_events=1048576 kernel/keys/maxkeys=2000 kernel/keys/maxbytes=2000000 \
+		vm/max_map_count=262144 fs/aio-max-nr=524288; do
+		f="/proc/sys/${kv%%=*}"
+		want="${kv#*=}"
+		name="$(printf '%s' "${kv%%=*}" | tr / .)"
+		have="$(cat "$f" 2>/dev/null)" || continue
+		case "$have" in "" | *[!0-9]*) continue ;; esac
+		[ "$have" -lt "$want" ] || continue
+		if echo "$want" >"$f" 2>/dev/null; then
+			echo "[incus-entrypoint] host $name raised from $have to $want (INCUS_ENV_HOST_SYSCTL=off keeps the host's)"
+		else
+			echo "[incus-entrypoint] WARNING: host $name is $have, cannot raise it to $want: set it on the host (sysctl -w $name=$want), or instances and nested containers run out of it" >&2
+		fi
+	done
+}
+
 # File-backed btrfs and lvm pools need loop devices; docker only passes
 # /dev/loop-control, the loopN nodes are ours to create (and are lost with the
 # container's /dev at every start). Loop devices belong to the host kernel:
@@ -445,9 +486,19 @@ exec_incusd_locked() {
 	if [ -n "$log" ] && (: >>"$log") 2>/dev/null; then
 		exec >>"$log" 2>&1
 	fi
+	# The dir pool keeps the instances' root filesystems here, so Docker in an
+	# instance stacks overlayfs on this filesystem: on overlayfs or NFS every
+	# `docker run` there fails ("failed to mount … fstype: overlay … invalid
+	# argument").
+	fstype="$(stat -f -c %T /var/lib/incus 2>/dev/null || true)"
+	case "$fstype" in overlayfs | nfs*)
+		echo "[incus-entrypoint] WARNING: /var/lib/incus is on $fstype: Docker inside the instances of a dir pool cannot run containers; put INCUS_DATA on ext4, xfs or btrfs" >&2
+		;;
+	esac
 	check_server_cert
 	setup_cgroups
 	setup_devices
+	raise_host_limits
 	# Unprivileged instances map uids from this range.
 	for f in /etc/subuid /etc/subgid; do
 		grep -q '^root:' "$f" 2>/dev/null || echo 'root:1000000:1000000000' >>"$f"
@@ -532,11 +583,13 @@ preseed_incus() {
 		rm -f "$preseed"
 		return 0
 	}
-	if timeout 120 incus admin init --preseed <"$preseed"; then
+	if out="$(timeout 120 incus admin init --preseed <"$preseed" 2>&1)"; then
 		echo "[incus-entrypoint] preseed applied: storage pool default ($driver), bridge $BRIDGE"
 		as_root touch "$INIT_MARKER" || true
 	else
-		echo "[incus-entrypoint] WARNING: preseed failed (storage driver '$driver'?), it is retried at the next start" >&2
+		# "auto" takes a 10.x.y.0/24 that nothing answers on (ping, tcp/22):
+		# behind a proxy that accepts every connection none is free.
+		echo "[incus-entrypoint] WARNING: preseed failed, it is retried at the next start: ${out:-timed out after 120s} (storage driver '$driver'; bridge $bridge_addr, INCUS_ENV_BRIDGE_ADDRESS sets it)" >&2
 	fi
 	rm -f "$preseed"
 }

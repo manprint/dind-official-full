@@ -12,7 +12,7 @@ Copia **byte per byte** (gestendo i file sparse) **tutto lo stato** di Docker Sa
 
 ## 1. Cosa viene copiato
 
-| Percorso (relativo alla HOME) | Contenuto | Dimensione su `i7-lenovo-work` |
+| Percorso (relativo alla HOME) | Contenuto | Dimensione (esempio reale) |
 |---|---|---|
 | `.local/state/sandboxes/` | containerd embedded: snapshot rootfs (erofs), volumi block (`*-docker.img`, `sandbox-plugin-*-claude-*.img` = `~/.claude/projects` ecc.), spec in `runtimes/*.json`, chiave SSH, audit | 48G reali (24G sono il `docker.img` mai ripulito) |
 | `.cache/sandboxes/` | `policykit/governor.db` (policy di rete), feature flag | 544K |
@@ -21,7 +21,7 @@ Copia **byte per byte** (gestendo i file sparse) **tutto lo stato** di Docker Sa
 | `.config/com.docker.sandboxes/` | file dei secret usato solo senza Secret Service, se presente | KB |
 | `.local/share/sandboxes/` | dati client | KB |
 | `.sbx/` | cartella runtime | ~0 |
-| *(opzionale)* workspace host | es. `/mnt/fabio/dati/Git`, salvato con percorso assoluto | variabile |
+| *(opzionale)* workspace host | es. `/mnt/data/Git`, salvato con percorso assoluto | variabile |
 | file host dei server MCP locali | script/binari nominati con percorso assoluto nel comando (`INCLUDE_MCP_HOST_FILES=1`), ripristinati solo se mancano | KB |
 | *(opzionale)* `secrets.json.gpg` | credenziali sbx dal **keyring OS**: **non** stanno nelle cartelle sopra | KB |
 
@@ -39,8 +39,8 @@ Esclusi di default: `daemon.log*`, `client.log`, `tui.log`, `crashes/`, `mcp/*.l
 |---|---|
 | Linux, **stessa architettura** (x86_64) | snapshot e immagini sono legati all'architettura |
 | **Stessa versione sbx** (v0.50.1) | formato interno non stabile; `CHECK_SBX_VERSION=1` blocca |
-| **Stessa HOME** (`/home/fabio`) | percorsi assoluti nei DB bolt e nei JSON; `CHECK_HOME_PATH=1` blocca |
-| **Stessi percorsi dei workspace** (`/mnt/fabio/dati/Git`) | la spec della sandbox punta al percorso assoluto |
+| **Stessa HOME** (es. `/home/<utente>`) | percorsi assoluti nei DB bolt e nei JSON; `CHECK_HOME_PATH=1` blocca |
+| **Stessi percorsi dei workspace** (es. `/mnt/data/Git`) | la spec della sandbox punta al percorso assoluto |
 | `/dev/kvm` accessibile (utente nel gruppo `kvm`) | le sandbox sono microVM |
 | `tar` (GNU), `zstd`, `jq`, `pgrep`; per le credenziali `gpg` + `python3-secretstorage` | |
 | Spazio: circa la dimensione reale dello stato | lo script controlla |
@@ -54,8 +54,8 @@ Esclusi di default: `daemon.log*`, `client.log`, `tui.log`, `crashes/`, `mcp/*.l
 ./backup.sh
 ASSUME_YES=1 BACKUP_DIR=/media/usb INCLUDE_WORKSPACES=1 ./backup.sh
 
-# PC destinazione: stessa versione sbx installata, utente fabio
-./restore.sh /media/usb/sbxB-full-i7-lenovo-work-20261029-120000.tar.zst
+# PC destinazione: stessa versione sbx installata, stesso utente
+./restore.sh /media/usb/sbxB-full-<host>-20261029-120000.tar.zst
 EXISTING_STATE=move START_SANDBOXES_AFTER=1 ./restore.sh backup.tar.zst
 ```
 
@@ -70,7 +70,7 @@ Tutte le variabili sono in testa agli script e si possono sovrascrivere da ambie
 3. **Credenziali** (`INCLUDE_SECRETS=1`): export dal keyring, cifrato con gpg AES256 (il JSON in chiaro passa solo in pipe). `SECRETS_ID_FILTER` limita gli item con una regex sull'ID.
 4. Crea `meta.tar` (manifest, metadata e secrets), **primo membro** dell'archivio: il restore lo legge senza decomprimere tutto.
 5. **Conferma** (salvo `ASSUME_YES=1`).
-6. **`fstrim /var/lib/docker`** in ogni sandbox running (`TRIM_DIND_BEFORE_STOP=1`): libera i blocchi cancellati negli `.img` sparse. In un test: 961M → 6.7M. Su `claude-developmanet` dovrebbe portare il `docker.img` da 24G a circa 250M.
+6. **`fstrim /var/lib/docker`** in ogni sandbox running (`TRIM_DIND_BEFORE_STOP=1`): libera i blocchi cancellati negli `.img` sparse. In un test: 961M → 6.7M. Un `docker.img` da 24G mai ripulito può scendere a poche centinaia di MB.
 7. **Stop:** `sbx stop <running…>` → `sbx daemon stop` → attesa che il processo `sbx daemon start` sparisca (`STOP_TIMEOUT`).
 8. **Copia:** `tar --sparse -cpf - meta.tar <stato> [workspace] | zstd -T0` → `.partial`. Un exit code di tar ≠ 0 è considerato un errore, perché con il daemon fermo nulla deve cambiare.
 9. Rinomina `.partial` → `.tar.zst` e scrive `<file>.sha256` (`WRITE_SHA256_SIDECAR=1`).
@@ -78,10 +78,10 @@ Tutte le variabili sono in testa agli script e si possono sovrascrivere da ambie
 
 Procedura manuale equivalente:
 ```bash
-sbx exec claude-developmanet sudo fstrim -v /var/lib/docker      # opzionale, riduce l'img
-sbx stop claude-developmanet && sbx daemon stop
+sbx exec claude-dev sudo fstrim -v /var/lib/docker      # opzionale, riduce l'img
+sbx stop claude-dev && sbx daemon stop
 tar --sparse -cpf - -C ~ .local/state/sandboxes .cache/sandboxes .sbx | zstd -T0 > sbx-full.tar.zst
-sbx daemon start --detach && sbx run -d --name claude-developmanet
+sbx daemon start --detach && sbx run -d --name claude-dev
 ```
 
 ### Configurazione `backup.sh`
@@ -122,13 +122,13 @@ sbx daemon start --detach && sbx run -d --name claude-developmanet
 7. `sbx daemon start --detach`, `sbx ls`, e con `START_SANDBOXES_AFTER=1` riavvia le sandbox che erano running.
 8. Passi finali: `sbx login` se richiesto, `sbx secret ls`, `sbx run --name <sandbox>`.
 
-Procedura manuale equivalente (PC nuovo, stessa versione sbx, utente `fabio`):
+Procedura manuale equivalente (PC nuovo, stessa versione sbx, stesso utente):
 ```bash
 sbx daemon stop 2>/dev/null || true
 zstd -dc sbx-full.tar.zst | tar -C ~ -xpf -
 sbx daemon start --detach && sbx ls
-sbx secret set github --sandbox claude-developmanet    # se non hai esportato le credenziali
-sbx run --name claude-developmanet
+sbx secret set github --sandbox claude-dev    # se non hai esportato le credenziali
+sbx run --name claude-dev
 ```
 
 ### Configurazione `restore.sh`
@@ -155,7 +155,7 @@ sbx run --name claude-developmanet
 
 ## 6. Note e limiti
 
-- **Fermo macchina:** tutte le sandbox restano ferme per la durata di `tar` + `zstd`. Con `fstrim` lo stato di `i7-lenovo-work` scende da circa 48G a circa 25G reali.
+- **Fermo macchina:** tutte le sandbox restano ferme per la durata di `tar` + `zstd`. Con `fstrim` uno stato reale è sceso da circa 48G a circa 25G.
 - **Workspace:** se non lo includi, copialo a parte (rsync o git) **nello stesso percorso assoluto**, prima di avviare la sandbox.
 - **Login Docker di sbx:** OAuth con refresh token che ruota a ogni rinnovo (ogni 15 minuti): una copia vale finché uno dei due lati non rinnova, poi l'altro viene sloggato (`secret not found`). Non viene copiato di default: dopo il restore esegui `sbx login`, e non tenere accesi insieme sorgente e copia.
 - **opencode:** il kit riscrive `~/.config/opencode/opencode.json` a ogni avvio della sandbox; le chiavi aggiunte a mano si perdono anche senza backup.
@@ -166,7 +166,7 @@ sbx run --name claude-developmanet
 
 ## 7. Test eseguiti (29/10/2026, sbx v0.50.1)
 
-`claude-developmanet` mai toccata: il daemon sbx dell'host non è stato fermato. Lo stop e il riavvio del daemon sono stati provati dentro i container di `docker-compose.sbx.bind.yml`, dove lo script gira identico (HOME `/home/alpine`).
+Il daemon sbx di un host con sandbox in uso non è stato fermato. Lo stop e il riavvio del daemon sono stati provati dentro i container di `docker-compose.sbx.bind.yml`, dove lo script gira identico (HOME `/home/alpine`).
 
 **Matrice completa** (dettagli in [README_SBX.md](../../README_SBX.md#test)): 11 sandbox, una per agent, personalizzate in un container (le stesse della strategia A), salvate con `backup.sh` e ripristinate in un altro container che aveva già uno stato sbx e un suo login (`EXISTING_STATE=move`).
 - Backup: 268 s a daemon fermo, archivio da 13G (stato di 11 sandbox, workspace, file host MCP, secret cifrati).

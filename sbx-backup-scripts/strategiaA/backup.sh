@@ -28,14 +28,14 @@
 #  Volumi si copiano a sandbox accesa; Docker interno (raw) e rootfs richiedono
 #  l'arresto: lo script ferma dockerd/la sandbox (solo lei, non il daemon sbx)
 #  e la riavvia detached alla fine. Consigliato con agente idle.
-#  Uso:   ./backup.sh                      (config sotto)
+#  Uso:   ./backup.sh <sandbox>            (config sotto)
 #         SANDBOX_NAME=x BACKUP_DIR=/mnt/usb ./backup.sh
 # =============================================================================
 set -Eeuo pipefail
 
 # ============================== CONFIGURAZIONE ===============================
 # Ogni variabile si può sovrascrivere da ambiente: VAR=valore ./backup.sh
-SANDBOX_NAME="${SANDBOX_NAME:-claude-developmanet}"         # sandbox da salvare
+SANDBOX_NAME="${SANDBOX_NAME:-${1:-}}"                      # sandbox da salvare (obbligatoria)
 BACKUP_DIR="${BACKUP_DIR:-$HOME/sbx-backups}"               # cartella di destinazione del .tar
 STAMP="${STAMP:-$(date +%Y%m%d-%H%M%S)}"
 BACKUP_NAME="${BACKUP_NAME:-sbxA-${SANDBOX_NAME}-${STAMP}}" # nome file finale (senza .tar)
@@ -147,6 +147,7 @@ print("%d secret, %d variabili env esportati" % (len(items), len(env)), file=sys
 '
 
 # ------------------------------ preflight ------------------------------------
+[[ -n "$SANDBOX_NAME" ]] || die "manca la sandbox: ./backup.sh <nome> oppure SANDBOX_NAME=<nome> ./backup.sh (elenco: sbx ls)"
 for c in "$SBX_BIN" tar jq sha256sum; do need "$c"; done
 [[ -z "$SECRETS_PASSPHRASE_FILE" || -r "$SECRETS_PASSPHRASE_FILE" ]] || die "SECRETS_PASSPHRASE_FILE non leggibile"
 

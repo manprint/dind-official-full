@@ -43,11 +43,11 @@ Salva **una** sandbox sbx in **un solo file `.tar`**, usando solo comandi suppor
 
 ```bash
 # PC sorgente
-./backup.sh                                   # chiede conferma prima dello stop per lo snapshot
-ASSUME_YES=1 BACKUP_DIR=/media/usb ./backup.sh
+./backup.sh claude-dev                        # chiede conferma prima dello stop per lo snapshot
+ASSUME_YES=1 BACKUP_DIR=/media/usb ./backup.sh claude-dev
 
 # copia il file sbxA-<nome>-<data>.tar sul PC nuovo, poi:
-./restore.sh /media/usb/sbxA-claude-developmanet-20261029-120000.tar
+./restore.sh /media/usb/sbxA-claude-dev-20261029-120000.tar
 ```
 
 Tutte le variabili di configurazione sono in testa agli script e si possono sovrascrivere da ambiente, ad esempio `VAR=valore ./script.sh`.
@@ -72,7 +72,7 @@ In caso di errore rimuove i parziali e il template temporaneo e **riavvia comunq
 
 | Variabile | Default | Significato |
 |---|---|---|
-| `SANDBOX_NAME` | `claude-developmanet` | sandbox da salvare |
+| `SANDBOX_NAME` | primo argomento | sandbox da salvare (obbligatoria) |
 | `BACKUP_DIR` / `BACKUP_NAME` / `STAMP` | `~/sbx-backups` / `sbxA-<nome>-<data>` / data | destinazione e nome del file |
 | `TEMPLATE_TAG` / `KEEP_LOCAL_TEMPLATE` | `sbx-backup/<nome>:<data>` / `0` | tag del rootfs; `1` = lascia il template |
 | `PERSISTENT_PATHS` | `auto` | volumi del kit; oppure lista di path |
@@ -137,7 +137,7 @@ In caso di errore rimuove i parziali e il template temporaneo e **riavvia comunq
 ## 6. Procedura manuale equivalente (senza script)
 
 ```bash
-S=claude-developmanet; W=/mnt/fabio/dati/Git; B=~/sbx-backups/manual; mkdir -p $B
+S=claude-dev; W=/mnt/data/Git; B=~/sbx-backups/manual; mkdir -p $B
 # --- PC sorgente
 sbx exec $S tar -C /home/agent/.claude --exclude=lost+found -cpf - projects sessions todos shell-snapshots statsig | zstd > $B/claude-dirs.tar.zst
 sbx exec $S sh -c 'docker save $(docker image ls --format "{{.Repository}}:{{.Tag}}" | grep -v "<none>")' | zstd > $B/dind-images.tar.zst
@@ -171,7 +171,7 @@ sbx run --name $S
 
 ## 8. Test eseguiti (29/10/2026, sbx v0.50.1)
 
-`claude-developmanet` mai toccata: tutti i test su sandbox e container `-tmp`, cancellati a fine test.
+Tutti i test su sandbox e container temporanei (`-tmp`), cancellati a fine test; nessuna sandbox in uso toccata.
 
 **Matrice completa** dentro i container di `docker-compose.sbx.bind.yml` (dettagli in [README_SBX.md](../../README_SBX.md#test)): 11 sandbox, una per agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell), personalizzate in un container e ripristinate una per una in un altro, con il suo login e senza sandbox.
 - Personalizzazioni: marker nel rootfs, pacchetto apt, utente, `/opt`; config degli agent; volumi del kit; variabili `-e`; Docker interno (immagine, volume, container fermo e acceso); workspace multipli e `:ro`; porte tcp4 e udp; secret della sandbox, globali, registry e client secret MCP; MCP statico e caricato dopo; skill `readwrite` e dallo store; regole di rete della sandbox e globali; settings. Per claude anche plugin e marketplace, MCP utente, `CLAUDE.md`, agent, comandi, skill, sessioni e todo; per codex MCP, `AGENTS.md` e skill; per kiro gli steering; per opencode `AGENTS.md` e skill.

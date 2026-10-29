@@ -17,7 +17,7 @@ A e B valgono per sbx installato sull'host e per sbx dentro il container di `doc
 ## Quale usare
 
 - **A** se il PC nuovo ha un OS, un utente o una versione sbx diversi, se vuoi spostare **una sola** sandbox, o se non puoi fermare le altre. È la scelta di default.
-- **B** se passi da Linux a Linux con lo stesso utente (`fabio`), la stessa versione sbx e gli stessi percorsi, e vuoi un clone esatto di tutto.
+- **B** se passi da Linux a Linux con lo stesso utente (stessa HOME), la stessa versione sbx e gli stessi percorsi, e vuoi un clone esatto di tutto.
 - **Migrazione importante:** falle **entrambe**, ripristina con B e tieni A come rete di sicurezza.
 
 ## Uso
@@ -25,8 +25,8 @@ A e B valgono per sbx installato sull'host e per sbx dentro il container di `doc
 ```bash
 # Strategia A
 cd strategiaA
-./backup.sh                                   # → ~/sbx-backups/sbxA-<sandbox>-<data>.tar
-./restore.sh ~/sbx-backups/sbxA-claude-developmanet-<data>.tar
+./backup.sh <sandbox>                         # → ~/sbx-backups/sbxA-<sandbox>-<data>.tar
+./restore.sh ~/sbx-backups/sbxA-<sandbox>-<data>.tar
 
 # Strategia B
 cd strategiaB
@@ -50,10 +50,10 @@ SBX_DATA=/srv/sbx SBX_SECRETS_DIR=/srv/sbx-secrets ./restore.sh /srv/backup/sbxC
 - **Credenziali:** sbx le tiene nel **keyring di sistema**, non su disco. Entrambi gli script le esportano **cifrate con gpg** (passphrase interattiva oppure `SECRETS_PASSPHRASE_FILE`). Non conservare la passphrase insieme al backup.
 - **OAuth Anthropic copiato:** il token vale su entrambi i PC, ma la rotazione può invalidarne uno. Dopo la migrazione usa la sandbox su **un solo** PC.
 - **Login Docker di sbx:** è OAuth con refresh token che ruota a ogni rinnovo (ogni 15 minuti). Una copia del login vale finché uno dei due lati non rinnova, poi l'altro viene sloggato (`secret not found`). Per questo A e B non lo copiano di default: **sul PC nuovo esegui `sbx login`** (se lì sbx è già loggato, quel login resta). C copia anche il login, che funziona finché l'originale resta spento. In ogni caso non tenere accesi insieme originale e copia.
-- **Workspace** (`/mnt/fabio/dati/Git`): non è dentro la sandbox. Includilo (`INCLUDE_WORKSPACE[S]=1`) oppure copialo a parte con rsync o git, **nello stesso percorso assoluto**. Così la history di Claude si ricollega da sola. Con A, se cambi percorso, le cartelle dei progetti vengono rinominate, ma le impostazioni per progetto in `~/.claude.json` vanno riconfermate.
+- **Workspace** (es. `/mnt/data/Git`): non è dentro la sandbox. Includilo (`INCLUDE_WORKSPACE[S]=1`) oppure copialo a parte con rsync o git, **nello stesso percorso assoluto**. Così la history di Claude si ricollega da sola. Con A, se cambi percorso, le cartelle dei progetti vengono rinominate, ma le impostazioni per progetto in `~/.claude.json` vanno riconfermate.
 - **Docker interno** delle sandbox: A con `DIND_MODE=raw` (default), B e C copiano tutto `/var/lib/docker`, container compresi. Con A e `DIND_MODE=export` si salvano solo immagini e volumi: i container vanno ricreati.
 - **RAM:** con A, se il PC nuovo ha meno memoria, imposta `MEMORY=...` (massimo il 75% della RAM host).
-- **Spazio:** A richiede circa 2 volte il rootfs usato (oggi circa 21G). B richiede circa la dimensione reale dello stato: oggi circa 48G, circa 25G dopo il `fstrim` che lo script esegue da solo.
+- **Spazio:** A richiede circa 2 volte il rootfs usato. B richiede circa la dimensione reale dello stato; il `fstrim` che lo script esegue da solo la riduce (in un caso reale da 48G a 25G).
 - **Sicurezza:** nessuno script cancella o sovrascrive sandbox o stato esistenti. Il restore si ferma, oppure con B e `EXISTING_STATE=move` sposta da parte lo stato precedente. Il PC sorgente resta intatto.
 - **Prima di dismettere il PC vecchio:** fai il restore, verifica con `sbx ls`, `sbx secret ls` e `sbx run --name <sandbox>`, controlla che la history di Claude ci sia.
 
@@ -63,4 +63,4 @@ Matrice completa nei container di `docker-compose.sbx.bind.yml`: 11 sandbox, una
 - **A:** 90/90 controlli identici, contenuto e permessi di ogni file identici (tranne il CA del proxy); differenze solo attese (login, mtime dei file riscritti dal kit alla create, flag `detached`).
 - **B:** 90/90 controlli e impronta identici, tranne il login (non copiato).
 - **C:** verifica 1:1 di ogni file di `SBX_DATA`, 90/90 controlli identici, login copiato funzionante con l'originale spento.
-- Sull'host reale B non è stata eseguita: avrebbe fermato `claude-developmanet`. Alla prima esecuzione reale va osservata.
+- Su un host con sandbox in uso B non è stata eseguita, perché le avrebbe fermate. Alla prima esecuzione reale va osservata.

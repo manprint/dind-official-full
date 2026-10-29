@@ -61,11 +61,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: shellcheck
-        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh entrypoint.claude.sh tests/smoke.sh tests/smoke.incus.sh tests/claude.sh tests/host-deny.sh scripts/host-deny.sh scripts/claude-start.sh scripts/claude-stop.sh tests/terraform.sh tests/templates.sh tests/nested.incus.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh scripts/terraform/guest/*.sh
+        run: shellcheck entrypoint.sh entrypoint.minimal.sh entrypoint.incus.sh entrypoint.claude.sh tests/smoke.sh tests/smoke.incus.sh tests/claude.sh tests/host-deny.sh scripts/host-deny.sh scripts/claude-start.sh scripts/claude-stop.sh tests/terraform.sh tests/templates.sh tests/nested.incus.sh scripts/create_incus_alpine.sh scripts/create_incus_debian13.sh scripts/create_incus_ubuntu2404.sh scripts/create_incus_ubuntu2604.sh scripts/create_incus_fedora.sh scripts/terraform/guest/*.sh entrypoint.sbx.sh sbx-keyring-daemon.sh tests/smoke.sbx.sh docker-compose.sbx.bind.yml.sh
+
+      # Backup scripts: warnings and errors (info-level notes are accepted there).
+      - name: shellcheck sbx-backup-scripts
+        run: shellcheck -S warning sbx-backup-scripts/*/*.sh
 
       - name: Compose files
         run: |
-          for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml docker-compose.incus.yml compose-claude.yml; do
+          for f in docker-compose.yml docker-compose.bind.yml docker-compose.minimal.bind.yml docker-compose.incus.yml compose-claude.yml docker-compose.sbx.bind.yml; do
             docker compose -f "$f" config -q
           done
 
@@ -147,6 +151,18 @@ jobs:
             runner: ubuntu-24.04-arm
             platform: linux/arm64
             dockerfile: Dockerfile.claude
+          - variant: sbx
+            image_suffix: "-sbx"
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            dockerfile: Dockerfile.sbx
+          - variant: sbx
+            image_suffix: "-sbx"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: Dockerfile.sbx
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -209,7 +225,7 @@ jobs:
           retention-days: 1
 
   # The exact digest that would be tagged, on its native runner. Nothing is
-  # tagged unless all eight pass.
+  # tagged unless all ten pass.
   smoke:
     name: smoke-${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -262,6 +278,16 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
             script: tests/smoke.sh
+          - variant: sbx
+            image_suffix: "-sbx"
+            arch: amd64
+            runner: ubuntu-24.04
+            script: tests/smoke.sbx.sh
+          - variant: sbx
+            image_suffix: "-sbx"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            script: tests/smoke.sbx.sh
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -316,6 +342,8 @@ jobs:
             image_suffix: "-incus"
           - variant: claude
             image_suffix: "-claude"
+          - variant: sbx
+            image_suffix: "-sbx"
     steps:
       - name: Lowercase image name
         id: names
@@ -393,6 +421,7 @@ jobs:
             ("docker-compose.minimal.bind.yml", "-minimal"),
             ("docker-compose.incus.yml", "-incus"),
             ("compose-claude.yml", "-claude"),
+            ("docker-compose.sbx.bind.yml", "-sbx"),
           ):
             image = f"{base}{suffix}:{version}"
             p = Path(filename)
@@ -427,6 +456,8 @@ jobs:
             docker-compose.minimal.bind.yml
             docker-compose.incus.yml
             compose-claude.yml
+            docker-compose.sbx.bind.yml
+            docker-compose.sbx.bind.yml.sh
             scripts/host-deny.sh
             scripts/claude-start.sh
             scripts/claude-stop.sh

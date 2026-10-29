@@ -9,7 +9,7 @@ ghcr.io/manprint/dind-official-full           # completa
 ghcr.io/manprint/dind-official-full-minimal   # minimal
 ghcr.io/manprint/dind-official-full-incus     # Incus al posto di Docker, v. README_INCUS.md
 ghcr.io/manprint/dind-official-full-claude    # minimal + Claude Code e toolchain, v. Variante claude
-ghcr.io/manprint/dind-official-full-sbx       # solo build locale: Docker Sandboxes (sbx), v. README_SBX.md
+ghcr.io/manprint/dind-official-full-sbx       # Docker Sandboxes (sbx) accanto a dockerd, v. Variante sbx
 ```
 
 ## Download ultima release
@@ -57,11 +57,29 @@ done
 chmod +x host-deny.sh claude-start.sh claude-stop.sh
 ```
 
+Variante sbx (v. [Variante sbx](#variante-sbx)), con lo script che prepara le cartelle dei bind mount e la password del keyring:
+
+```bash
+for f in docker-compose.sbx.bind.yml docker-compose.sbx.bind.yml.sh; do
+  curl -fsSLO https://github.com/manprint/dind-official-full/releases/latest/download/$f
+done
+chmod +x docker-compose.sbx.bind.yml.sh && ./docker-compose.sbx.bind.yml.sh
+docker compose -f docker-compose.sbx.bind.yml up -d
+```
+
+```bash
+for f in docker-compose.sbx.bind.yml docker-compose.sbx.bind.yml.sh; do
+  wget -q https://github.com/manprint/dind-official-full/releases/latest/download/$f
+done
+chmod +x docker-compose.sbx.bind.yml.sh && ./docker-compose.sbx.bind.yml.sh
+docker compose -f docker-compose.sbx.bind.yml up -d
+```
+
 I compose della release hanno l'immagine fissata alla versione; ci sono anche `docker-compose.yml` (named volumes). Nei file scaricati `DIND_TAG` e `INCUS_TAG` non hanno effetto: per un'altra versione si scarica il file dalla release di quel tag.
 
 ## Avvio
 
-I compose non buildano: usano `ghcr.io/manprint/dind-official-full[-minimal]:${DIND_TAG:-latest}`, scaricata se manca in locale. Per usare un'immagine buildata a mano, `just build` (o `just build-full` / `just build-minimal`) la tagga con quei nomi e `latest`, e `docker compose up -d` la prende senza pull. Per la variante Incus: `just build-incus`, che tagga `ghcr.io/manprint/dind-official-full-incus:latest`. La variante sbx non è pubblicata: prima di `docker compose -f docker-compose.sbx.bind.yml up -d` serve `just build-sbx` (v. [Variante sbx](#variante-sbx)).
+I compose non buildano: usano `ghcr.io/manprint/dind-official-full[-minimal]:${DIND_TAG:-latest}`, scaricata se manca in locale. Per usare un'immagine buildata a mano, `just build` (o `just build-full` / `just build-minimal`) la tagga con quei nomi e `latest`, e `docker compose up -d` la prende senza pull. Per la variante Incus: `just build-incus`, che tagga `ghcr.io/manprint/dind-official-full-incus:latest`. Per la variante sbx: `just build-sbx`, poi `./docker-compose.sbx.bind.yml.sh` prima del primo `up` (v. [Variante sbx](#variante-sbx)).
 
 ```bash
 docker compose up -d
@@ -224,7 +242,7 @@ tests/smoke.sh dind-test 3
 
 Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate a `dockerd`), `DOCKER_DAEMON_INTERNAL_BIP`, dotfile, `HOME` e prompt, lock sul data-root, scadenza di 45 s con un daemon che non risponde, `docker stop`, chiave TLS corrotta, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`, `kill -9` del PID 1 dall'host con la restart policy, ricreazione del container sugli stessi volumi. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
 
-Variante sbx: nessuno smoke test automatico né in pipeline (servono KVM e un `sbx login` per istanza). La matrice di test manuale (11 agent, backup e restore con le strategie A, B e C, verifica 1:1) è in [README_SBX.md](README_SBX.md#test).
+Smoke test della variante sbx: `tests/smoke.sbx.sh IMAGE [CYCLES]` (`just smoke-sbx TAG`), anche in pipeline. Avvio sotto tini, dockerd e daemon sbx, keyring sbloccato con la password del file e di nuovo sbloccato dopo un crash di gnome-keyring, `memlock`, cartelle di sbx di `alpine`, script di backup, CYCLES `docker kill` con riavvio sugli stessi volumi, stop pulito con sbx fermato prima di dockerd. Non serve né `sbx login` né KVM: nessuna sandbox viene creata. La matrice di test manuale con le sandbox (11 agent, backup e restore con le strategie A, B e C, verifica 1:1) è in [README_SBX.md](README_SBX.md#test).
 
 Smoke test della variante Incus: `tests/smoke.incus.sh IMAGE [CYCLES]` (`just smoke-incus TAG`). Richiede un host con cgroup v2, `/dev/fuse` e `--cap-add ALL`; il crash test (SIGKILL al PID 1 dall'host) usa anche `--privileged`, come lo smoke Docker.
 
@@ -333,14 +351,14 @@ Le altre variabili (`INCUS_ENV_*`, proxy, timeout di stop), la gestione di RAM e
 
 ## Variante sbx
 
-`Dockerfile.sbx` (base Ubuntu 24.04, sbx v0.50.1) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede un host Linux con `/dev/kvm` (non Docker Desktop né WSL2). Non è pubblicata dalla pipeline e il suo compose non è tra gli asset della release: si builda e si usa dal repo.
+`Dockerfile.sbx` (base Ubuntu 24.04, sbx v0.50.1) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede un host Linux con `/dev/kvm` (non Docker Desktop né WSL2). Il pacchetto `docker-sbx` dentro l'immagine è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
 
 ```bash
-just build-sbx                                # ghcr.io/manprint/dind-official-full-sbx:latest
-mkdir -p data/sbx-secrets && openssl rand -base64 32 | tr -d '\n' > data/sbx-secrets/keyring_pass
-chmod 600 data/sbx-secrets/keyring_pass       # password del keyring, fuori da SBX_DATA
+./docker-compose.sbx.bind.yml.sh              # cartelle dei bind mount e password del keyring
 docker compose -f docker-compose.sbx.bind.yml up -d
 docker exec -it dind-env-sbx sbx login        # login Docker di sbx, una volta per istanza
 ```
+
+`docker-compose.sbx.bind.yml.sh [COMPOSE]` legge i percorsi da `docker compose config`, quindi rispetta `SBX_DATA`, `SBX_SECRETS_DIR` e `SBX_WORKSPACE` dall'ambiente o dal `.env` accanto al compose. Crea ogni cartella montata con l'utente che lo lancia (lasciate a Docker sarebbero di root) e genera `keyring_pass` in `SBX_SECRETS_DIR`. Si può rilanciare: non tocca le cartelle esistenti e non sostituisce mai una `keyring_pass` già presente, che serve ad aprire il keyring.
 
 Ogni componente (Docker, home, stato sbx, cache, config, keyring, workspace) ha il suo bind mount sotto `SBX_DATA`; la password del keyring sta fuori, in `SBX_SECRETS_DIR`. Backup e migrazione con gli script in `sbx-backup-scripts/` (A: una sandbox, B: stato sbx a freddo, C: tutto `SBX_DATA` con verifica 1:1). Dettagli, limiti e matrice dei test in [README_SBX.md](README_SBX.md).

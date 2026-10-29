@@ -13,7 +13,8 @@
 #                      D-Bus activated by sbx-keyring-daemon, which unlocks it
 #                      with SBX_KEYRING_PASS_FILE (again after a crash)
 #   sbx daemon         started after dockerd: the upstream dind script moves
-#                      every process of the root cgroup when it enables nesting
+#                      every process of the root cgroup when it enables nesting;
+#                      the sandboxd.pid of a killed container is removed first
 set -eu
 
 UID_NOW="$(id -u)"
@@ -62,6 +63,10 @@ prepare_sbx_dirs() {
 	for d in $PRIVATE_DIRS; do
 		as_root chmod 0700 "$SBX_HOME/$d" 2>/dev/null || true
 	done
+	# Left by a kill or a crash. PIDs restart with the container, so it may
+	# name another process by now: `sbx daemon start` then waits 10 s for that
+	# one to answer and gives up. No sandboxd runs before this script starts it.
+	as_root rm -f "$SBX_HOME/.local/state/sandboxes/sandboxes/sandboxd/sandboxd.pid"
 	# The workspace mount: a missing source is created by Docker as root. Only
 	# an empty one is handed to alpine; a populated one keeps its owners.
 	ws="${SBX_WORKSPACE_PATH:-}"

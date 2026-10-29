@@ -54,7 +54,7 @@ build-incus-clean tag="latest": (_build_incus tag "--no-cache")
 # Build the Claude image (Dockerfile.claude, used by compose-claude.yml): local only, not released
 build-claude tag="latest": (_build "Dockerfile.claude" image_claude tag "")
 
-# Build the sbx image (Dockerfile.sbx, used by docker-compose.sbx.bind.yml): local only, not released
+# Build the sbx image (Dockerfile.sbx, used by docker-compose.sbx.bind.yml)
 build-sbx tag="latest": (_build "Dockerfile.sbx" image_sbx tag "")
 
 _build_incus tag flags:
@@ -86,6 +86,10 @@ smoke-claude tag="latest" cycles="3":
 # Smoke-test the Incus image (needs --cap-add ALL, systempaths=unconfined, cgroup v2, /dev/fuse)
 smoke-incus tag="latest" cycles="3":
     tests/smoke.incus.sh {{ image_incus }}:{{ tag }} {{ cycles }}
+
+# Smoke-test the sbx image (needs --privileged; no sbx login, no KVM needed)
+smoke-sbx tag="latest" cycles="3":
+    tests/smoke.sbx.sh {{ image_sbx }}:{{ tag }} {{ cycles }}
 
 # Instance templates (needs internet): just templates-incus latest ubuntu2404 fedora ; no names = all five
 templates-incus tag="latest" *templates:

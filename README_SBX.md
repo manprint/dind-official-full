@@ -1,6 +1,6 @@
 # Variante sbx (Docker Sandboxes dentro dind)
 
-Variante dell'immagine con **Docker Sandboxes** (`sbx`) accanto a Docker-in-Docker: `Dockerfile.sbx`, `entrypoint.sbx.sh`, `sbx-keyring-daemon.sh`, `docker-compose.sbx.bind.yml` e gli script di backup in `sbx-backup-scripts/` (nell'immagine in `/opt/sbx-backup-scripts`). Non è rilasciata dalla pipeline: si builda in locale.
+Variante dell'immagine con **Docker Sandboxes** (`sbx`) accanto a Docker-in-Docker: `Dockerfile.sbx`, `entrypoint.sbx.sh`, `sbx-keyring-daemon.sh`, `docker-compose.sbx.bind.yml` e gli script di backup in `sbx-backup-scripts/` (nell'immagine in `/opt/sbx-backup-scripts`). La pipeline la pubblica come `ghcr.io/manprint/dind-official-full-sbx` (amd64 e arm64), e allega alla release il compose e lo script `docker-compose.sbx.bind.yml.sh` che ne prepara le cartelle. Il pacchetto `docker-sbx` è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
 
 - Base **Ubuntu 24.04** invece di Alpine: il pacchetto `docker-sbx` contiene binari glibc ed è pubblicato solo per Ubuntu. dockerd parte con gli stessi script upstream delle altre varianti (`dind`, `dockerd-entrypoint.sh`, presi da `docker:29.9.1-dind`) dietro `entrypoint.minimal.sh`, invariato.
 - `sbx` **v0.50.1** (versione Debian fissata da `ARG SBX_VERSION`): stato e template non sono garantiti tra versioni diverse.
@@ -18,11 +18,14 @@ Variante dell'immagine con **Docker Sandboxes** (`sbx`) accanto a Docker-in-Dock
 ## Avvio
 
 ```bash
-just build-sbx                       # ghcr.io/manprint/dind-official-full-sbx:latest
+# dalla release (oppure dal repo; per un'immagine locale: just build-sbx)
+for f in docker-compose.sbx.bind.yml docker-compose.sbx.bind.yml.sh; do
+  curl -fsSLO https://github.com/manprint/dind-official-full/releases/latest/download/$f
+done
+chmod +x docker-compose.sbx.bind.yml.sh
 
-# password del keyring, fuori da SBX_DATA (v. Keyring)
-mkdir -p data/sbx-secrets && openssl rand -base64 32 | tr -d '\n' > data/sbx-secrets/keyring_pass
-chmod 600 data/sbx-secrets/keyring_pass
+# cartelle dei bind mount e password del keyring (fuori da SBX_DATA, v. Keyring)
+./docker-compose.sbx.bind.yml.sh
 
 docker compose -f docker-compose.sbx.bind.yml up -d
 docker exec -it dind-env-sbx sbx login        # device code nel browser, una volta per istanza
@@ -118,7 +121,9 @@ Login dopo il restore: con A e B serve un `sbx login` sulla destinazione (se c'�
 
 ## Test
 
-29/10/2026, sbx v0.50.1. Più istanze di questo compose in parallelo (progetti `-tmp` con `SBX_DATA`, rete e porta propri), ognuna con il suo `sbx login`.
+**Smoke test** (`tests/smoke.sbx.sh IMAGE [CYCLES]`, `just smoke-sbx TAG`, in pipeline su amd64 e arm64 prima di pubblicare i tag): avvio sotto tini, dockerd e daemon sbx, CLI che raggiunge il daemon, keyring sbloccato con la password del file e un item salvato, gnome-keyring di nuovo sbloccato dopo un `kill -9`, `memlock` illimitato, cartelle di sbx di `alpine`, i 6 script di backup, CYCLES `docker kill` con riavvio sugli stessi volumi (keyring e item conservati), stop pulito in meno di 60 s con sbx fermato prima di dockerd. Non crea sandbox, quindi non servono né `sbx login` né KVM: il daemon parte anche senza `/dev/kvm`, con un avviso. Ha trovato un bug: dopo un `docker kill` restava `sandboxd.pid`, e al riavvio quel PID poteva appartenere a un altro processo, così `sbx daemon start` aspettava 10 s e rinunciava (sbx giù dopo il secondo kill). Ora l'entrypoint lo rimuove all'avvio.
+
+**Matrice manuale** con le sandbox, 29/10/2026, sbx v0.50.1. Più istanze di questo compose in parallelo (progetti `-tmp` con `SBX_DATA`, rete e porta propri), ognuna con il suo `sbx login`.
 
 **Sorgente:** 11 sandbox, una per agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell), ognuna personalizzata:
 - rootfs: marker, pacchetto apt, utente, `/opt`; config dell'agent; volumi del kit; variabili `-e`;

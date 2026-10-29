@@ -12,6 +12,7 @@ image_full := registry / repo
 image_minimal := registry / repo + "-minimal"
 image_incus := registry / repo + "-incus"
 image_claude := registry / repo + "-claude"
+image_sbx := registry / repo + "-sbx"
 
 # Incus release to build from source: INCUS_VERSION from the environment, else
 # the ARG default in Dockerfile.incus (one place to bump it).
@@ -52,6 +53,9 @@ build-incus-clean tag="latest": (_build_incus tag "--no-cache")
 
 # Build the Claude image (Dockerfile.claude, used by compose-claude.yml): local only, not released
 build-claude tag="latest": (_build "Dockerfile.claude" image_claude tag "")
+
+# Build the sbx image (Dockerfile.sbx, used by docker-compose.sbx.bind.yml): local only, not released
+build-sbx tag="latest": (_build "Dockerfile.sbx" image_sbx tag "")
 
 _build_incus tag flags:
     docker build --pull {{ flags }} -f Dockerfile.incus \

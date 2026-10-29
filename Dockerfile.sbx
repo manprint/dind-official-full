@@ -1,0 +1,189 @@
+# Docker Sandboxes (sbx) next to Docker-in-Docker. Ubuntu instead of Alpine:
+# the sbx package ships glibc binaries (containerd-shim-nerdbox-v1,
+# libsailor.so) and is published for Ubuntu only. dockerd is started by the
+# same upstream scripts as the other variants (dind, dockerd-entrypoint.sh,
+# docker-entrypoint.sh), copied from the dind image this tag pins, behind the
+# unchanged entrypoint.minimal.sh.
+FROM docker:29.9.1-dind AS dind
+
+FROM ubuntu:24.04
+
+# Exact Debian version of the docker-sbx package: sbx state and templates are
+# not guaranteed to survive a version change (see sbx-backup-scripts/README.md).
+ARG SBX_VERSION=0.50.1-1~ubuntu.24.04~noble
+# "current" resolves to the newest rclone at build time; CI resolves it once.
+ARG DIND_RCLONE_VERSION=current
+
+ENV DEBIAN_FRONTEND=noninteractive \
+	TZ=Europe/Rome \
+	LANG=it_IT.UTF-8 \
+	LC_ALL=it_IT.UTF-8 \
+	LANGUAGE=it_IT:it \
+	TINI_SUBREAPER=1 \
+	DOCKER_TLS_CERTDIR=/certs \
+	XDG_RUNTIME_DIR=/run/user/1000 \
+	DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+	SBX_NO_DISPLAY=1
+
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+	install -m 0755 -d /etc/apt/keyrings; \
+	curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
+	echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+		> /etc/apt/sources.list.d/docker.list; \
+	apt-get update; \
+	apt-get upgrade -y; \
+	apt-get install -y --no-install-recommends \
+		docker-ce \
+		docker-ce-cli \
+		containerd.io \
+		docker-buildx-plugin \
+		docker-compose-plugin \
+		docker-sbx="$SBX_VERSION" \
+		dbus \
+		dbus-daemon \
+		gnome-keyring \
+		libsecret-tools \
+		python3 \
+		python3-secretstorage \
+		tini \
+		bash-completion \
+		bind9-dnsutils \
+		bridge-utils \
+		conntrack \
+		direnv \
+		e2fsprogs \
+		ethtool \
+		file \
+		fuse3 \
+		fzf \
+		git \
+		iftop \
+		iperf3 \
+		iproute2 \
+		iptables \
+		iputils-ping \
+		jq \
+		less \
+		locales \
+		lsof \
+		mtr-tiny \
+		nano \
+		ncurses-bin \
+		net-tools \
+		netcat-openbsd \
+		nftables \
+		ngrep \
+		nmap \
+		openssh-client \
+		openssl \
+		pigz \
+		procps \
+		psmisc \
+		ripgrep \
+		shellcheck \
+		socat \
+		strace \
+		sudo \
+		tar \
+		tcpdump \
+		tmux \
+		traceroute \
+		tree \
+		tzdata \
+		unzip \
+		util-linux \
+		xz-utils \
+		zstd; \
+	sed -i 's/^# *\(it_IT.UTF-8\)/\1/' /etc/locale.gen; \
+	locale-gen; \
+	ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime; \
+	echo "Europe/Rome" > /etc/timezone; \
+	sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf; \
+	grep -q '^user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fuse.conf; \
+	printf 'export TZ=Europe/Rome\nexport LANG=it_IT.UTF-8\nexport LC_ALL=it_IT.UTF-8\nexport LANGUAGE=it_IT:it\n' > /etc/profile.d/10locale.sh; \
+	printf 'if [ -n "${BASH_VERSION:-}" ] && command -v direnv >/dev/null 2>&1; then eval "$(direnv hook bash)"; fi\n' > /etc/profile.d/20direnv.sh; \
+	# The sbx session bus and keyring are alpine's; login shells and `exec -u root` find them too.
+	printf 'export XDG_RUNTIME_DIR=/run/user/1000\nexport DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus\nexport SBX_NO_DISPLAY=1\n' > /etc/profile.d/30sbx.sh; \
+	dpkgArch="$(dpkg --print-architecture)"; \
+	case "$dpkgArch" in \
+		amd64) rcloneArch=amd64 ;; \
+		arm64) rcloneArch=arm64 ;; \
+		*) echo >&2 "unsupported arch for rclone: $dpkgArch"; exit 1 ;; \
+	esac; \
+	rcloneVersion="$DIND_RCLONE_VERSION"; \
+	if [ "$rcloneVersion" = current ]; then \
+		rcloneVersion="$(curl -fsSL https://downloads.rclone.org/version.txt | awk '{print $2}')"; \
+	fi; \
+	rcloneDir="rclone-${rcloneVersion}-linux-${rcloneArch}"; \
+	curl -fsSL -o "/tmp/${rcloneDir}.zip" "https://downloads.rclone.org/${rcloneVersion}/${rcloneDir}.zip"; \
+	curl -fsSL -o /tmp/rclone.sha256sums "https://downloads.rclone.org/${rcloneVersion}/SHA256SUMS"; \
+	(cd /tmp && grep " ${rcloneDir}\.zip\$" rclone.sha256sums | sha256sum -c -); \
+	unzip -o "/tmp/${rcloneDir}.zip" -d /tmp; \
+	install -m 0755 "/tmp/${rcloneDir}/rclone" /usr/local/bin/rclone; \
+	rclone version; \
+	# uid/gid 1000 is "ubuntu" in the base image; the dind-env user is alpine.
+	userdel -r ubuntu 2>/dev/null || true; \
+	groupadd -g 1000 alpine; \
+	useradd -m -u 1000 -g alpine -d /home/alpine -s /bin/bash alpine; \
+	usermod -s /bin/bash root; \
+	usermod -aG docker alpine; \
+	printf '%s\n' \
+		'# !env_reset: the entrypoint hands DOCKER_TLS_CERTDIR & co. to dockerd-entrypoint.sh.' \
+		'# always_set_home: with the environment kept, root would inherit HOME=/home/alpine.' \
+		'Defaults:alpine !env_reset' \
+		'Defaults:alpine always_set_home' \
+		'Defaults:alpine secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+		'alpine ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/alpine; \
+	chmod 0440 /etc/sudoers.d/alpine; \
+	visudo -cf /etc/sudoers.d/alpine; \
+	mkdir -p /certs /certs/client; \
+	chmod 1777 /certs /certs/client; \
+	sbx version; \
+	rm -rf /var/lib/apt/lists/* /tmp/*
+
+COPY --from=dind /usr/local/bin/dind /usr/local/bin/dockerd-entrypoint.sh /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
+COPY bashrc /etc/skel/.bashrc
+COPY bash_aliases /etc/skel/.bash_aliases
+COPY profile /etc/skel/.profile
+COPY entrypoint.minimal.sh /usr/local/bin/dev-entrypoint-minimal.sh
+COPY entrypoint.sbx.sh /usr/local/bin/dev-entrypoint-sbx.sh
+COPY sbx-keyring-daemon.sh /usr/local/bin/sbx-keyring-daemon
+COPY sbx-backup-scripts /opt/sbx-backup-scripts
+
+RUN set -eux; \
+	# D-Bus activation of the Secret Service through sbx-keyring-daemon: the
+	# stock service files start gnome-keyring locked. /usr/local/share comes
+	# first in XDG_DATA_DIRS, so these win over /usr/share.
+	mkdir -p /usr/local/share/dbus-1/services; \
+	for name in org.freedesktop.secrets org.gnome.keyring; do \
+		printf '[D-BUS Service]\nName=%s\nExec=/usr/local/bin/sbx-keyring-daemon\n' "$name" \
+			> "/usr/local/share/dbus-1/services/$name.service"; \
+	done; \
+	chmod 0755 /usr/local/bin/sbx-keyring-daemon; \
+	# dockerd-entrypoint.sh runs dockerd under docker-init from PATH; the
+	# docker-ce package keeps it in /usr/libexec/docker.
+	ln -sf /usr/libexec/docker/docker-init /usr/local/bin/docker-init; \
+	docker-init --version; \
+	chmod +x /usr/local/bin/dev-entrypoint-minimal.sh /usr/local/bin/dev-entrypoint-sbx.sh; \
+	find /opt/sbx-backup-scripts -name '*.sh' -exec chmod 0755 {} +; \
+	install -m 0644 /etc/skel/.bashrc /root/.bashrc; \
+	install -m 0644 /etc/skel/.bash_aliases /root/.bash_aliases; \
+	install -m 0644 /etc/skel/.profile /root/.profile; \
+	ln -sfn .profile /root/.bash_profile; \
+	install -m 0644 /etc/skel/.bashrc /home/alpine/.bashrc; \
+	install -m 0644 /etc/skel/.bash_aliases /home/alpine/.bash_aliases; \
+	install -m 0644 /etc/skel/.profile /home/alpine/.profile; \
+	ln -sfn .profile /home/alpine/.bash_profile; \
+	chown alpine:alpine /home/alpine/.bashrc /home/alpine/.bash_aliases /home/alpine/.profile /home/alpine/.bash_profile
+
+VOLUME ["/var/lib/docker", "/home/alpine"]
+EXPOSE 2375 2376
+
+USER alpine
+WORKDIR /home/alpine
+# tini is PID 1 (reaps the daemons the sbx session forks off); the entrypoint is
+# its only child and runs entrypoint.minimal.sh as its own child.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/dev-entrypoint-sbx.sh"]
+CMD []

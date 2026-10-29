@@ -9,6 +9,7 @@ ghcr.io/manprint/dind-official-full           # completa
 ghcr.io/manprint/dind-official-full-minimal   # minimal
 ghcr.io/manprint/dind-official-full-incus     # Incus al posto di Docker, v. README_INCUS.md
 ghcr.io/manprint/dind-official-full-claude    # minimal + Claude Code e toolchain, v. Variante claude
+ghcr.io/manprint/dind-official-full-sbx       # solo build locale: Docker Sandboxes (sbx), v. README_SBX.md
 ```
 
 ## Download ultima release
@@ -327,3 +328,14 @@ incus launch images:debian/12 web -c limits.memory=512MiB -c limits.cpu=2
 | `INCUS_STOP_GRACE_PERIOD` | `120s` | `stop_grace_period` del container |
 
 Le altre variabili (`INCUS_ENV_*`, proxy, timeout di stop), la gestione di RAM e swap, i template per le istanze e la matrice dei test sono in [README_INCUS.md](README_INCUS.md). Per creare le istanze: [incus_by_script.md](incus_by_script.md) (script bash) e [incus_by_terraform.md](incus_by_terraform.md) (OpenTofu/Terraform).
+
+## Variante sbx
+
+`Dockerfile.sbx` (base Ubuntu 24.04, `just build-sbx`, non pubblicata dalla pipeline) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede `/dev/kvm` sull'host.
+
+```bash
+docker compose -f docker-compose.sbx.bind.yml up -d
+docker exec -it dind-env-sbx sbx login        # login Docker di sbx, una volta per istanza
+```
+
+Ogni componente (Docker, home, stato sbx, cache, config, keyring, workspace) ha il suo bind mount sotto `SBX_DATA`; la password del keyring sta fuori, in `SBX_SECRETS_DIR`. Backup e migrazione con gli script in `sbx-backup-scripts/` (A: una sandbox, B: stato sbx a freddo, C: tutto `SBX_DATA` con verifica 1:1). Dettagli, limiti e matrice dei test in [README_SBX.md](README_SBX.md).

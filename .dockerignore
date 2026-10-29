@@ -5,6 +5,10 @@
 !entrypoint.sh
 !entrypoint.minimal.sh
 !entrypoint.claude.sh
+!Dockerfile.sbx
+!entrypoint.sbx.sh
+!sbx-keyring-daemon.sh
+!sbx-backup-scripts
 !bashrc
 !bash_aliases
 !profile

@@ -1,0 +1,117 @@
+services:
+  dind:
+    image: ghcr.io/manprint/dind-official-full-sbx:${DIND_TAG:-latest}
+    # DIND_NAME, DIND_TLS_PORT, SBX_DATA and the network let several instances
+    # run side by side (one project each: docker compose -p NAME ...).
+    container_name: ${DIND_NAME:-dind-env-sbx}
+    hostname: ${DIND_HOSTNAME:-dind-sbx}
+    # dockerd needs it, and it hands over /dev/kvm. For sbx without dockerd the
+    # least privilege that works is devices: [/dev/kvm], cap_drop: [ALL],
+    # cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID] (README_SBX.md).
+    privileged: true
+    # gnome-keyring keeps secrets in mlock'ed memory; Docker's default 8 MiB
+    # runs out after some hours of sbx use, and it falls back to swappable
+    # memory ("couldn't allocate secure memory").
+    ulimits:
+      memlock: -1
+    # Hard stops (power loss, host crash, OOM) must bring staging back on
+    # their own: the host daemon restarts the container at boot and after
+    # a crash. Unlike on-failure, it does not depend on the exit code.
+    restart: unless-stopped
+    working_dir: /home/alpine
+    # Default log rotation for the inner containers. Drop it when mounting
+    # an /etc/docker/daemon.json with log-opts: dockerd refuses a setting
+    # given both as a flag and in the file.
+    command: ["--log-opt", "max-size=10m", "--log-opt", "max-file=5"]
+    environment:
+      TZ: Europe/Rome
+      LANG: it_IT.UTF-8
+      LC_ALL: it_IT.UTF-8
+      LANGUAGE: it_IT:it
+      # Resolvers for the inner containers, e.g. "10.0.0.2 10.0.0.3". Unset,
+      # those on the inner default bridge fall back to 8.8.8.8/8.8.4.4.
+      DIND_DNS: ${DIND_DNS:-}
+      # Subnet of the inner default bridge (docker0), e.g. "10.10.100.0/24":
+      # the inner containers start on it. Unset, dockerd keeps 172.17.0.0/16.
+      DOCKER_DAEMON_INTERNAL_BIP: ${DOCKER_DAEMON_INTERNAL_BIP:-}
+      # Shown in the shell prompt as user@host(name), e.g. "myenv".
+      DIND_ENVIRONMENT_NAME: ${DIND_ENVIRONMENT_NAME:-}
+      # Sandboxes started with the container: "previous" (those running at the
+      # last clean stop), names separated by spaces or commas, or empty.
+      SBX_AUTOSTART: ${SBX_AUTOSTART:-}
+      # Seconds the sandboxes get to stop before dockerd is stopped.
+      SBX_STOP_TIMEOUT: ${SBX_STOP_TIMEOUT:-60}
+      SBX_KEYRING_PASS_FILE: /run/secrets/sbx/keyring_pass
+      # Workspace path inside, the target of the last volume below.
+      SBX_WORKSPACE_PATH: ${SBX_WORKSPACE_PATH:-/workspace}
+    volumes:
+      # One bind mount per component, all under SBX_DATA: a cold copy of that
+      # directory (sbx-backup-scripts/strategiaC) is the whole environment.
+      # Docker of this container: images, containers, volumes.
+      - ${SBX_DATA:-./data/sbx}/docker:/var/lib/docker
+      # Home: dotfiles, ~/.ssh, ~/.gitconfig, backups (~/sbx-backups).
+      - ${SBX_DATA:-./data/sbx}/home:/home/alpine
+      # sbx: every sandbox (VM disks, persistent kit volumes, Docker inside
+      # each sandbox), spec, templates, kits, MCP registry, skills store, audit.
+      - ${SBX_DATA:-./data/sbx}/sbx-state:/home/alpine/.local/state/sandboxes
+      # sbx: network/filesystem policies (governor.db), feature flags.
+      - ${SBX_DATA:-./data/sbx}/sbx-cache:/home/alpine/.cache/sandboxes
+      # sbx: settings overrides (sbx settings set), login state.
+      - ${SBX_DATA:-./data/sbx}/sbx-config:/home/alpine/.config/sandboxes
+      # sbx: client data.
+      - ${SBX_DATA:-./data/sbx}/sbx-share:/home/alpine/.local/share/sandboxes
+      # sbx: credential bindings approved by sbx env (credentials.yaml).
+      - ${SBX_DATA:-./data/sbx}/sbx-bindings:/home/alpine/.config/sbx
+      # sbx: secret file used only when no Secret Service runs.
+      - ${SBX_DATA:-./data/sbx}/sbx-secrets:/home/alpine/.config/com.docker.sandboxes
+      # sbx: runtime directory.
+      - ${SBX_DATA:-./data/sbx}/sbx-run:/home/alpine/.sbx
+      # Keyring (gnome-keyring): the Docker login of sbx and every sbx secret
+      # (sbx secret set, MCP client secrets). Lost keyring = log in again.
+      - ${SBX_DATA:-./data/sbx}/keyrings:/home/alpine/.local/share/keyrings
+      # Password of that keyring, read-only, outside SBX_DATA on purpose:
+      # a copy of the data directory alone does not open the keyring. Without
+      # keyring_pass in it the entrypoint generates one inside the keyrings dir.
+      - ${SBX_SECRETS_DIR:-./data/sbx-secrets}:/run/secrets/sbx:ro
+      # Workspace of the sandboxes. sbx records its path in each sandbox and
+      # Claude Code keys its history on it: keep SBX_WORKSPACE_PATH equal to
+      # the host path (e.g. both /mnt/data/Git) so the sandboxes, the
+      # backups and a later move to a host sbx all see the same path.
+      - ${SBX_WORKSPACE:-${SBX_DATA:-./data/sbx}/workspace}:${SBX_WORKSPACE_PATH:-/workspace}
+    # Sandboxes stopped first (SBX_STOP_TIMEOUT), then dockerd.
+    stop_grace_period: 120s
+    # dockerd writes to this container's log: rotate it on the host.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Daemons only: `sbx ls` would also fail before `sbx login`. The status
+    # command exits 0 when stopped too, hence the grep.
+    healthcheck:
+      test: ["CMD-SHELL", "docker version >/dev/null && sbx daemon status | grep -qw running"]
+      interval: 30s
+      timeout: 15s
+      start_period: 120s
+      retries: 3
+    # Own network instead of the default one. The container takes .1, the usual
+    # gateway address, so the bridge's gateway moves to DIND_NET_GATEWAY. Two
+    # instances side by side need a different DIND_NET_SUBNET each.
+    networks:
+      dind:
+        ipv4_address: ${DIND_IPV4:-10.10.163.1}
+    ports:
+      # With DOCKER_TLS_CERTDIR set (dind default) dockerd listens on 2376
+      # only, so 2375 has no listener. Kept on loopback: the Docker API is
+      # root-equivalent and must not be reachable from the network.
+      - "127.0.0.1:${DIND_TLS_PORT:-2378}:2376"
+      # A sandbox port published inside (sbx ports NAME --publish
+      # 0.0.0.0:18080:8080) reaches the host only through a line here, e.g.
+      # - "127.0.0.1:18080:18080"
+
+networks:
+  dind:
+    ipam:
+      config:
+        - subnet: ${DIND_NET_SUBNET:-10.10.163.0/24}
+          gateway: ${DIND_NET_GATEWAY:-10.10.163.254}

@@ -1,15 +1,15 @@
 # Incus-in-Docker
 
-Variante dell'immagine che al posto di Docker esegue **Incus 7.5.1** (container di sistema, niente VM) dentro un container Docker: `Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`, `tests/templates.sh`. Rilasciata dalla stessa pipeline delle altre varianti.
+Variante dell'immagine che al posto di Docker esegue **Incus 7.6.0** (container di sistema, niente VM) dentro un container Docker: `Dockerfile.incus`, `entrypoint.incus.sh`, `docker-compose.incus.yml`, `tests/smoke.incus.sh`, `tests/templates.sh`. Rilasciata dalla stessa pipeline delle altre varianti.
 
-- Daemon `incusd` compilato dai sorgenti (7.5.1; Alpine 3.24 pacchettizza solo la 7.0.1 LTS), client `incus`, `fuidshift`.
+- Daemon `incusd` compilato dai sorgenti (7.6.0; Alpine 3.24 pacchettizza solo la 7.0.1 LTS), client `incus`, `fuidshift`.
 - **Client web ufficiale** (`incus-ui-canonical`), servito dal daemon su `https://HOST:8443/ui/` e, **senza nessun certificato nel browser**, su `http://HOST:8080/` tramite un proxy interno.
 - **API esposta** su 8443 (TLS, solo certificati client fidati): usabile da OpenTofu/Terraform.
 - Preseed al primo avvio: pool di storage `default`, bridge `incusbr0`, profilo `default`.
 - Stessa base della variante minimal: utente `alpine` + sudo, rclone, fuse, dotfile con prompt `alpine@host(env)(branch)`, `DIND_ENVIRONMENT_NAME`.
 - Nessun Docker dentro l'immagine (Docker si installa *dentro* le istanze, vedi sotto).
 - **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 44) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: script bash e, in `terraform/`, lo stesso come template OpenTofu/Terraform. Vedi la sezione dedicata.
-- **OpenTofu 1.13.1** (`tofu`, con il completamento bash) e il provider `lxc/incus` 1.2.1 già installato: `tofu init` funziona offline.
+- **OpenTofu 1.13.9** (`tofu`, con il completamento bash) e il provider `lxc/incus` 1.2.1 già installato: `tofu init` funziona offline.
 
 Guide operative, con tutte le impostazioni, le modifiche dopo la creazione e backup/restore delle istanze: **[incus_by_script.md](incus_by_script.md)** (script bash) e **[incus_by_terraform.md](incus_by_terraform.md)** (OpenTofu/Terraform).
 
@@ -122,7 +122,7 @@ resource "incus_instance" "web" {
 }
 ```
 
-- **OpenTofu dentro il container**: `tofu` (OpenTofu 1.13.1) è nell'immagine. Il provider `lxc/incus` 1.2.1 sta nel mirror locale implicito `/usr/share/terraform/plugins`, quindi `tofu init` lo collega senza scaricare nulla (provato con `--network none`). Lì il provider usa la configurazione del client `incus` e il socket locale, come gli script, senza token né certificati. Per istanze già configurate c'è il template `/opt/incus-template/terraform` (v. *Template per creare istanze*).
+- **OpenTofu dentro il container**: `tofu` (OpenTofu 1.13.9) è nell'immagine. Il provider `lxc/incus` 1.2.1 sta nel mirror locale implicito `/usr/share/terraform/plugins`, quindi `tofu init` lo collega senza scaricare nulla (provato con `--network none`). Lì il provider usa la configurazione del client `incus` e il socket locale, come gli script, senza token né certificati. Per istanze già configurate c'è il template `/opt/incus-template/terraform` (v. *Template per creare istanze*).
 
 ## Come lanciare i container, e con quali capability
 

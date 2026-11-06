@@ -31,7 +31,7 @@ Salva **una** sandbox sbx in **un solo file `.tar`**, usando solo comandi suppor
 ## 2. Requisiti
 
 **PC sorgente:** `sbx`, `tar`, `jq`, `sha256sum`, `zstd` (oppure `COMPRESSOR=gzip`). Per le credenziali servono anche `gpg` e `python3-secretstorage`.
-**PC destinazione:** `sbx` (meglio la stessa versione, v0.50.1), `sbx login` fatto **su quel PC**, `git` per copilot/droid/kiro, `tar`, `jq`, `zstd`. Per le credenziali: `gpg` e `python3-secretstorage` (`sudo apt install python3-secretstorage`).
+**PC destinazione:** `sbx` (meglio la stessa versione dell'origine), `sbx login` fatto **su quel PC**, `git` per copilot/droid/kiro, `tar`, `jq`, `zstd`. Per le credenziali: `gpg` e `python3-secretstorage` (`sudo apt install python3-secretstorage`).
 
 **Spazio disco:**
 - backup: circa 2 volte il rootfs usato (file temporaneo + archivio);

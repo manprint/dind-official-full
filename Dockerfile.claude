@@ -1,4 +1,4 @@
-FROM docker:29.9.1-dind
+FROM docker:29.9.3-dind
 
 # "current" resolves to the newest rclone at build time; CI resolves it once
 # and passes the same version to every platform build. Not RCLONE_VERSION:
@@ -243,7 +243,7 @@ RUN set -eux; \
 	"$JAVA_HOME/bin/javac" -version; \
 	python3 -m venv /opt/venv; \
 	/opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
-	/opt/venv/bin/pip install --no-cache-dir bashate 'headroom-ai[mcp]==0.34.0'; \
+	/opt/venv/bin/pip install --no-cache-dir bashate 'headroom-ai[mcp]==0.43.1'; \
 	chown -R alpine:alpine /opt/venv; \
 	printf '# /etc/profile resets PATH: restore the image one (venv, JDK) for login shells.\nexport PATH="%s"\n' "$PATH" > /etc/profile.d/00dind-path.sh; \
 	npm install -g \

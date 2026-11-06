@@ -38,7 +38,7 @@ Esclusi di default: `daemon.log*`, `client.log`, `tui.log`, `crashes/`, `mcp/*.l
 | Requisito | Perché |
 |---|---|
 | Linux, **stessa architettura** (x86_64) | snapshot e immagini sono legati all'architettura |
-| **Stessa versione sbx** (v0.50.1) | formato interno non stabile; `CHECK_SBX_VERSION=1` blocca |
+| **Stessa versione sbx** (quella dell'origine) | formato interno non stabile; `CHECK_SBX_VERSION=1` blocca |
 | **Stessa HOME** (es. `/home/<utente>`) | percorsi assoluti nei DB bolt e nei JSON; `CHECK_HOME_PATH=1` blocca |
 | **Stessi percorsi dei workspace** (es. `/mnt/data/Git`) | la spec della sandbox punta al percorso assoluto |
 | `/dev/kvm` accessibile (utente nel gruppo `kvm`) | le sandbox sono microVM |

@@ -51,7 +51,7 @@ build-incus tag="latest": (_build_incus tag "")
 # Same, from scratch (no layer cache)
 build-incus-clean tag="latest": (_build_incus tag "--no-cache")
 
-# Build the Claude image (Dockerfile.claude, used by compose-claude.yml): local only, not released
+# Build the Claude image (Dockerfile.claude, used by compose-claude.yml)
 build-claude tag="latest": (_build "Dockerfile.claude" image_claude tag "")
 
 # Build the sbx image (Dockerfile.sbx, used by docker-compose.sbx.bind.yml)
@@ -112,3 +112,5 @@ names:
     @echo "full:    {{ image_full }}"
     @echo "minimal: {{ image_minimal }}"
     @echo "incus:   {{ image_incus }}"
+    @echo "claude:  {{ image_claude }}"
+    @echo "sbx:     {{ image_sbx }}"

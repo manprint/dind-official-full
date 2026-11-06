@@ -68,6 +68,10 @@ for cidr in ${deny//,/ }; do
 		"$ipt" -n -L DOCKER-USER >/dev/null 2>&1 || "$ipt" -N DOCKER-USER
 		"$ipt" -I DOCKER-USER -i "$bridge" -j "$CHAIN"
 		"$ipt" -I INPUT -i "$bridge" -j "$CHAIN"
+		# Only dockerd hooks DOCKER-USER into FORWARD: without that jump the
+		# forwarded path fails open.
+		"$ipt" -C FORWARD -j DOCKER-USER 2>/dev/null ||
+			echo "[host-deny] WARNING: $ipt FORWARD does not jump to DOCKER-USER: traffic to the LAN and other hosts is not filtered until dockerd adds it (dockerd not running, or firewall-backend nftables)" >&2
 	fi
 	"$ipt" -A "$CHAIN" -d "$cidr" -j DROP
 	echo "[host-deny] $bridge: deny $cidr"

@@ -6,7 +6,7 @@ ARG ALPINE_VERSION=3.24
 FROM alpine:${ALPINE_VERSION} AS build
 # Release to build, e.g. 7.5.1. The tarball is checked against the release's
 # checksums.txt.
-ARG INCUS_VERSION=7.5.1
+ARG INCUS_VERSION=7.6.0
 RUN set -eux; \
 	apk add --no-cache \
 		acl-dev \
@@ -51,7 +51,7 @@ RUN set -eux; \
 FROM node:26-alpine AS ui
 # The node 26 image ships no corepack, hence no yarn; the lockfile is yarn v1.
 RUN npm install -g yarn@1.22.22
-ARG INCUS_UI_REF=8d2dd01308cfe02ab0069aacbb71c5a517e0d02e
+ARG INCUS_UI_REF=542d407e932f8f3b90fffa8b997accf4d0d86142
 RUN apk add --no-cache git
 WORKDIR /src
 # vite.config.ts stamps the build with `git rev-parse`, so a checkout, not a tarball.
@@ -73,7 +73,7 @@ RUN set -eux; \
 # release archive is checked against SHA256SUMS, and SHA256SUMS against its
 # signature by the OpenTofu signing key, pinned by fingerprint.
 FROM alpine:${ALPINE_VERSION} AS tofu
-ARG OPENTOFU_VERSION=1.13.1
+ARG OPENTOFU_VERSION=1.13.9
 ARG OPENTOFU_GPG_FINGERPRINT=E3E6E43D84CB852EADB0051D0C0AF313E5FD9F80
 RUN apk add --no-cache ca-certificates gnupg
 WORKDIR /src

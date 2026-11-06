@@ -1,6 +1,6 @@
 # dind-env
 
-`docker:29.9.1-dind` + toolchain di sviluppo. `dockerd` resta root (comportamento DinD); la sessione parte come `alpine` (uid/gid 1000).
+`docker:29.9.3-dind` + toolchain di sviluppo. `dockerd` resta root (comportamento DinD); la sessione parte come `alpine` (uid/gid 1000).
 
 Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativamente su Linux, macOS e Windows con Docker Desktop, OrbStack o WSL2. La variante Incus ([sotto](#variante-incus)) richiede un host Linux con cgroup v2 e `/dev/fuse`: su Docker Desktop, OrbStack o WSL2 non è stata provata.
 
@@ -324,7 +324,7 @@ Valgono anche le variabili della tabella generale (`DIND_NAME`, `DIND_TLS_PORT`,
 
 ## Variante Incus
 
-L'immagine `ghcr.io/manprint/dind-official-full-incus` esegue **Incus 7.5.1** al posto di `dockerd`: il container ospita container di sistema (Alpine, Debian, Ubuntu, Fedora…), con una web UI e un'API per OpenTofu/Terraform. Docker non gira nel container, ma si può installare dentro ogni istanza. Le sezioni *Variabili*, *Più istanze*, *Lock* e *Resilienza* di questo documento riguardano la variante Docker: per Incus valgono [README_INCUS.md](README_INCUS.md) e i suoi *Limiti invalicabili*.
+L'immagine `ghcr.io/manprint/dind-official-full-incus` esegue **Incus 7.6.0** al posto di `dockerd`: il container ospita container di sistema (Alpine, Debian, Ubuntu, Fedora…), con una web UI e un'API per OpenTofu/Terraform. Docker non gira nel container, ma si può installare dentro ogni istanza. Le sezioni *Variabili*, *Più istanze*, *Lock* e *Resilienza* di questo documento riguardano la variante Docker: per Incus valgono [README_INCUS.md](README_INCUS.md) e i suoi *Limiti invalicabili*.
 
 ```bash
 docker compose -f docker-compose.incus.yml up -d
@@ -351,7 +351,7 @@ Le altre variabili (`INCUS_ENV_*`, proxy, timeout di stop), la gestione di RAM e
 
 ## Variante sbx
 
-`Dockerfile.sbx` (base Ubuntu 24.04, sbx v0.50.1) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede un host Linux con `/dev/kvm` (non Docker Desktop né WSL2). Il pacchetto `docker-sbx` dentro l'immagine è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
+`Dockerfile.sbx` (base Ubuntu 24.04, sbx v0.51.0) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede un host Linux con `/dev/kvm` (non Docker Desktop né WSL2). Il pacchetto `docker-sbx` dentro l'immagine è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
 
 ```bash
 ./docker-compose.sbx.bind.yml.sh              # cartelle dei bind mount e password del keyring

@@ -12,11 +12,12 @@
 # read from the compose (defaults and the environment), both paths denied
 # while a network outside the list stays reachable, replies to connections the
 # host starts still let through, the list written to /run/dind-env-deny/<bridge>
-# for DENY_HOST_CHECK, apply idempotent, a shorter list dropping a network,
+# for DENY_HOST_CHECK, apply idempotent, the warning without dockerd's FORWARD jump, a shorter list dropping a network,
 # IPv6 rules, remove restoring reachability and leaving no chain or list behind,
 # the refusals (no bridge name, a name over 15 characters, no root), and
 # claude-start.sh / claude-stop.sh (rules then container up, container down
-# then rules gone).
+# then rules gone, DENY_NETWORK and DIND_BRIDGE_NAME from the environment
+# reaching host-deny.sh through sudo).
 # Needs a Docker host that allows --privileged; no registry access.
 # Everything it creates is named dind-hostdeny-<pid>-* and removed on exit.
 set -euo pipefail
@@ -110,7 +111,8 @@ grep -qF "longer than 15 characters" <<<"$out" || fail "long bridge name not rep
 ok "refused: no root, no bridge name in the compose, a name over 15 characters"
 
 # --- apply
-hd /hd/compose.yml >/dev/null
+w="$(hd /hd/compose.yml 2>&1 >/dev/null)"
+grep -qF WARNING <<<"$w" && fail "apply warned with dockerd's FORWARD jump in place: $w"
 reach 198.51.100.2 8080 && fail "denied LAN address reachable (DOCKER-USER)"
 reach 203.0.113.1 8080 && fail "denied host address reachable (INPUT)"
 reach 192.0.2.2 8080 || fail "address outside the list blocked"
@@ -145,6 +147,13 @@ n="$(on_host sh -c "iptables -S DIND-DENY-br-hd-test | grep -c -- '-j DROP'")"
 [ "$n" = 2 ] || fail "chain has $n DROP rules after a second apply, want 2"
 ok "apply: idempotent (one jump each, one rule per network)"
 
+# Without dockerd's FORWARD jump the forwarded path fails open: apply must say so.
+on_host iptables -D FORWARD -j DOCKER-USER
+w="$(hd /hd/compose.yml 2>&1 >/dev/null)"
+on_host iptables -I FORWARD 1 -j DOCKER-USER
+grep -qF 'iptables FORWARD does not jump to DOCKER-USER' <<<"$w" || fail "no warning without the FORWARD jump: $w"
+ok "apply: warns when FORWARD does not jump to DOCKER-USER"
+
 # --- the compose's list changes (here through the environment it interpolates)
 docker exec -u 0 -w /work -e DENY_NETWORK=198.51.100.0/24 "$HOST" /work/scripts/host-deny.sh /hd/compose.yml >/dev/null
 reach 203.0.113.1 8080 || fail "network dropped from the list still denied"
@@ -176,5 +185,18 @@ on_host docker inspect hd-dind-1 >/dev/null 2>&1 && fail "claude-stop.sh: contai
 grep -qF DIND-DENY <<<"$(on_host iptables-save)" && fail "claude-stop.sh: rules left"
 on_host test ! -e /run/dind-env-deny/br-hd-test || fail "claude-stop.sh: list file left"
 ok "claude-start.sh: rules then container; claude-stop.sh: container then rules"
+
+# The list and the bridge from the caller's environment, which sudo resets: they
+# must still reach host-deny.sh (root's sudo has env_reset, like a host's).
+env_start() { docker exec -u 0 -w /work -e DENY_NETWORK=192.0.2.0/24 -e DIND_BRIDGE_NAME=br-hd-env "$HOST" "$@"; }
+env_start /work/scripts/claude-start.sh /hd/compose.yml >/dev/null 2>&1 || fail "claude-start.sh (environment) failed"
+[ "$(on_host cat /run/dind-env-deny/br-hd-env 2>/dev/null)" = 192.0.2.0/24 ] ||
+	fail "claude-start.sh: environment not passed to host-deny.sh (list file of br-hd-env)"
+reach 192.0.2.2 8080 && fail "claude-start.sh: network from the environment reachable"
+reach 198.51.100.2 8080 || fail "claude-start.sh: the compose default denied instead of the environment's list"
+env_start /work/scripts/claude-stop.sh /hd/compose.yml >/dev/null 2>&1 || fail "claude-stop.sh (environment) failed"
+grep -qF DIND-DENY <<<"$(on_host iptables-save)" && fail "claude-stop.sh (environment): rules left"
+on_host test ! -e /run/dind-env-deny/br-hd-env || fail "claude-stop.sh (environment): list file left"
+ok "claude-start.sh / claude-stop.sh: DENY_NETWORK and DIND_BRIDGE_NAME from the environment"
 
 echo "all checks passed"

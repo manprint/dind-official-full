@@ -51,6 +51,10 @@ CAPS=(
 	--cgroupns private
 	--device /dev/fuse
 )
+# Behind a proxy that accepts every connection, the preseed's automatic subnet
+# finds none free ("Failed to automatically find an unused IPv4 subnet"): set
+# INCUS_ENV_BRIDGE_ADDRESS to reach every container, compose included.
+[ -z "${INCUS_ENV_BRIDGE_ADDRESS:-}" ] || CAPS+=(-e "INCUS_ENV_BRIDGE_ADDRESS=$INCUS_ENV_BRIDGE_ADDRESS")
 RUN_FLAGS=(
 	"${CAPS[@]}"
 	--stop-timeout 120

@@ -108,7 +108,7 @@ provider_installation {
 
 **Versioni di OpenTofu e Terraform:**
 - il template richiede OpenTofu ≥ 1.6; `tofu test` richiede ≥ 1.8 (mock del provider);
-- provato con OpenTofu 1.13.1, quello dell'immagine;
+- provato con OpenTofu 1.13.9, quello dell'immagine;
 - provato anche con HashiCorp Terraform 1.16.5 (`init`, `validate`, `test`): Terraform prende il provider da `registry.terraform.io` e aggiunge la sua voce a `.terraform.lock.hcl`.
 
 ## Un altro server Incus

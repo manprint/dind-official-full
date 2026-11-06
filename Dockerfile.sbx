@@ -4,13 +4,13 @@
 # same upstream scripts as the other variants (dind, dockerd-entrypoint.sh,
 # docker-entrypoint.sh), copied from the dind image this tag pins, behind the
 # unchanged entrypoint.minimal.sh.
-FROM docker:29.9.1-dind AS dind
+FROM docker:29.9.3-dind AS dind
 
 FROM ubuntu:24.04
 
 # Exact Debian version of the docker-sbx package: sbx state and templates are
 # not guaranteed to survive a version change (see sbx-backup-scripts/README.md).
-ARG SBX_VERSION=0.50.1-1~ubuntu.24.04~noble
+ARG SBX_VERSION=0.51.0-1~ubuntu.24.04~noble
 # "current" resolves to the newest rclone at build time; CI resolves it once.
 ARG DIND_RCLONE_VERSION=current
 

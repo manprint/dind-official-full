@@ -188,7 +188,7 @@ stop_sbx() {
 
 # The trap is disarmed first: a second `docker stop` must not reach the minimal
 # entrypoint twice (its dockerd gets exactly one SIGTERM).
-# shellcheck disable=SC2317 # only called from the trap
+# shellcheck disable=SC2317,SC2329 # only called from the trap
 shutdown() {
 	trap '' INT TERM
 	stop_sbx

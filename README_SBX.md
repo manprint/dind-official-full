@@ -2,8 +2,8 @@
 
 Variante dell'immagine con **Docker Sandboxes** (`sbx`) accanto a Docker-in-Docker: `Dockerfile.sbx`, `entrypoint.sbx.sh`, `sbx-keyring-daemon.sh`, `docker-compose.sbx.bind.yml` e gli script di backup in `sbx-backup-scripts/` (nell'immagine in `/opt/sbx-backup-scripts`). La pipeline la pubblica come `ghcr.io/manprint/dind-official-full-sbx` (amd64 e arm64), e allega alla release il compose e lo script `docker-compose.sbx.bind.yml.sh` che ne prepara le cartelle. Il pacchetto `docker-sbx` è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
 
-- Base **Ubuntu 24.04** invece di Alpine: il pacchetto `docker-sbx` contiene binari glibc ed è pubblicato solo per Ubuntu. dockerd parte con gli stessi script upstream delle altre varianti (`dind`, `dockerd-entrypoint.sh`, presi da `docker:29.9.1-dind`) dietro `entrypoint.minimal.sh`, invariato.
-- `sbx` **v0.50.1** (versione Debian fissata da `ARG SBX_VERSION`): stato e template non sono garantiti tra versioni diverse.
+- Base **Ubuntu 24.04** invece di Alpine: il pacchetto `docker-sbx` contiene binari glibc ed è pubblicato solo per Ubuntu. dockerd parte con gli stessi script upstream delle altre varianti (`dind`, `dockerd-entrypoint.sh`, presi da `docker:29.9.3-dind`) dietro `entrypoint.minimal.sh`, invariato.
+- `sbx` **v0.51.0** (versione Debian fissata da `ARG SBX_VERSION`): stato e template non sono garantiti tra versioni diverse.
 - Tutti gli agent: `claude`, `codex`, `copilot`, `cursor`, `devin`, `docker-agent`, `droid`, `gemini`, `kiro`, `opencode`, `shell`.
 - Ogni dato persistente (Docker del container, home, stato sbx, keyring, workspace) è un **bind mount sotto una sola cartella** `SBX_DATA`: la copia a freddo di quella cartella è l'intero ambiente (strategia C).
 - Stessa base utente delle altre varianti: `alpine` (uid 1000) con sudo, rclone, fuse, dotfile e prompt, `DIND_ENVIRONMENT_NAME`, `DIND_DNS`, `DOCKER_DAEMON_INTERNAL_BIP`.

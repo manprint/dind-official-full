@@ -6,7 +6,7 @@
 # unchanged entrypoint.minimal.sh.
 FROM docker:29.9.3-dind AS dind
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 # Exact Debian version of the docker-sbx package: sbx state and templates are
 # not guaranteed to survive a version change (see sbx-backup-scripts/README.md).

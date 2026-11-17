@@ -304,7 +304,7 @@ OpenRC lascia tutti i processi nel cgroup radice dell'istanza, che quindi non pu
 
 `tests/templates.sh IMAGE [alpine|debian13|ubuntu2404|ubuntu2604|fedora ...]` (`just templates-incus TAG [template...]`) avvia l'immagine su bind mount nuovi, lancia ogni script con i suoi default (più `INSTANCE_SWAP=1GiB`), verifica, riavvia l'istanza e ripete i controlli. Serve internet (immagini delle istanze, pacchetti, repository Docker, rclone), quindi **non** fa parte della pipeline di release, il cui smoke test non usa registry. `SCRIPTS_DIR=scripts` prova gli script del working tree (compreso `terraform/`) invece di quelli nell'immagine; `TPL_ENV="DOCKER_SOURCE=distro"` aggiunge impostazioni a ogni esecuzione degli script. `MODE=tofu` (`just templates-incus-tofu`) crea le istanze con il template OpenTofu invece che con gli script (impostazioni come `TF_VAR_*`) e ripete tutti i controlli.
 
-| Verifica (tutte OK su ciascun template) | Alpine 3.24 | Debian 13 | Ubuntu 24.04 | Ubuntu 26.04 | Fedora 44 |
+| Verifica (tutte OK su ciascun template) | Alpine 3.24 | Debian 13 | Ubuntu 24.04 | Ubuntu 26.04 | Fedora 45 |
 |---|---|---|---|---|---|
 | creazione e provisioning da zero | 19–25 s | 26–29 s | 37–43 s | 37–40 s | 43–160 s (dnf) |
 | la riga finale dello script riporta l'IP dell'istanza | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -621,6 +621,7 @@ Host: Linux 7.0, cgroup v2, Docker. Immagine con Incus 7.5.1, due istanze (`a1` 
 | 63 | `tests/nested.incus.sh` (Docker annidato: `--restart unless-stopped`, `--restart always -m 64m`, un progetto Compose) su Debian 13, Ubuntu 24.04, Alpine 3.24, Fedora 44: `compose restart`, `stop`+`start`, `down`+`up`, crash del PID 1 | OK su tutti: dopo ogni stop ordinato ogni container annidato ha ricevuto il suo SIGTERM (docker stop → Incus → init dell'istanza → il suo Docker), dopo il crash nessuno; systemd `running`, limiti e DNS annidato a posto |
 | 64 | Fedora con `INSTALL_NET_TOOLS=false` su un host senza `CONFIG_IP_NF_RAW` | prima: ogni `docker run` nell'istanza falliva (`can't initialize iptables table 'raw'`, Docker su iptables-legacy); ora `iptables-nft` sempre con Docker, OK (bug 25) |
 | 65 | 10 istanze Debian 13 con Docker, 25–30 container annidati ciascuna, host con i limiti di default (`fs.inotify.max_user_instances=128`, `kernel.keys.maxkeys=200`) | prima: dalla 5ª istanza in poi systemd muore al boot (*Too many open files*), al 200° container annidato *unable to join session keyring*; con i limiti alzati dall'entrypoint 10/10 istanze `RUNNING`, 30/30 container annidati per istanza (bug 27) |
+| 66 | **Fedora 45** (`images:fedora/45`, default di `create_incus_fedora.sh` e del template OpenTofu da v1.5.1): `tests/templates.sh` e `MODE=tofu tests/templates.sh` con il template `fedora` sull'immagine `1.5.1` (tutta la tabella *Verifica eseguita*, swap sotto pressione inclusa) | OK in entrambi i modi, ~4 min totali |
 
 ### Bug trovati dai test (e corretti)
 

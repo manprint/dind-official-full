@@ -351,7 +351,7 @@ Le altre variabili (`INCUS_ENV_*`, proxy, timeout di stop), la gestione di RAM e
 
 ## Variante sbx
 
-`Dockerfile.sbx` (base Ubuntu 24.04, sbx v0.54.0) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede un host Linux con `/dev/kvm` (non Docker Desktop né WSL2). Il pacchetto `docker-sbx` dentro l'immagine è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
+`Dockerfile.sbx` (base Ubuntu 26.04, sbx v0.54.0) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede un host Linux con `/dev/kvm` (non Docker Desktop né WSL2). Il pacchetto `docker-sbx` dentro l'immagine è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
 
 ```bash
 ./docker-compose.sbx.bind.yml.sh              # cartelle dei bind mount e password del keyring

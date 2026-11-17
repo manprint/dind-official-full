@@ -6,11 +6,12 @@
 # unchanged entrypoint.minimal.sh.
 FROM docker:29.10.0-dind AS dind
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 # Exact Debian version of the docker-sbx package: sbx state and templates are
 # not guaranteed to survive a version change (see sbx-backup-scripts/README.md).
-ARG SBX_VERSION=0.54.0-1~ubuntu.24.04~noble
+# Codename in SBX_VERSION and in the apt source below must match FROM (26.04 = resolute).
+ARG SBX_VERSION=0.54.0-1~ubuntu.26.04~resolute
 # "current" resolves to the newest rclone at build time; CI resolves it once.
 ARG DIND_RCLONE_VERSION=current
 
@@ -30,7 +31,7 @@ RUN set -eux; \
 	apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
 	install -m 0755 -d /etc/apt/keyrings; \
 	curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
-	echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+	echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu resolute stable" \
 		> /etc/apt/sources.list.d/docker.list; \
 	apt-get update; \
 	apt-get upgrade -y; \

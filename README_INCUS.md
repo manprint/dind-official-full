@@ -8,7 +8,7 @@ Variante dell'immagine che al posto di Docker esegue **Incus 7.6.0** (container 
 - Preseed al primo avvio: pool di storage `default`, bridge `incusbr0`, profilo `default`.
 - Stessa base della variante minimal: utente `alpine` + sudo, rclone, fuse, dotfile con prompt `alpine@host(env)(branch)`, `DIND_ENVIRONMENT_NAME`.
 - Nessun Docker dentro l'immagine (Docker si installa *dentro* le istanze, vedi sotto).
-- **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 44) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: script bash e, in `terraform/`, lo stesso come template OpenTofu/Terraform. Vedi la sezione dedicata.
+- **Template per creare istanze** (Alpine 3.24, Debian 13, Ubuntu 24.04 e 26.04, Fedora 45) già pronte per lo sviluppo (utente, ssh, Docker, rclone/fuse, locale e tastiera italiani) in `/opt/incus-template/`: script bash e, in `terraform/`, lo stesso come template OpenTofu/Terraform. Vedi la sezione dedicata.
 - **OpenTofu 1.13.9** (`tofu`, con il completamento bash) e il provider `lxc/incus` 1.2.1 già installato: `tofu init` funziona offline.
 
 Guide operative, con tutte le impostazioni, le modifiche dopo la creazione e backup/restore delle istanze: **[incus_by_script.md](incus_by_script.md)** (script bash) e **[incus_by_terraform.md](incus_by_terraform.md)** (OpenTofu/Terraform).
@@ -216,7 +216,7 @@ Cinque script, già nell'immagine in `/opt/incus-template/` (proprietà `alpine`
 | `create_incus_debian13.sh` | `images:debian/13` | `debian` | systemd, `apt` |
 | `create_incus_ubuntu2404.sh` | `images:ubuntu/24.04` | `ubuntu` | come Debian; toglie il `sudo` senza password che l'immagine dà a `ubuntu` (`/etc/sudoers.d/90-incus`) |
 | `create_incus_ubuntu2604.sh` | `images:ubuntu/26.04` | `ubuntu` | come sopra |
-| `create_incus_fedora.sh` | `images:fedora/44` (l'ultima sul server di immagini; per un'altra versione `INSTANCE_IMAGE=images:fedora/45`) | `fedora` | systemd, `dnf`, gruppo `wheel`; Docker dal repository ufficiale, altrimenti `moby-engine` |
+| `create_incus_fedora.sh` | `images:fedora/45` (l'ultima sul server di immagini; per un'altra versione `INSTANCE_IMAGE=images:fedora/44`) | `fedora` | systemd, `dnf`, gruppo `wheel`; Docker dal repository ufficiale, altrimenti `moby-engine` |
 
 Fanno tutti le stesse cose con le stesse variabili.
 

@@ -45,7 +45,7 @@ run "distro_defaults" {
   }
 
   assert {
-    condition     = incus_instance.this.name == "fedora-dev" && incus_instance.this.image == "images:fedora/44"
+    condition     = incus_instance.this.name == "fedora-dev" && incus_instance.this.image == "images:fedora/45"
     error_message = "fedora name or image"
   }
 }

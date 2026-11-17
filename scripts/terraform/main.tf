@@ -12,7 +12,7 @@ locals {
     debian13   = { image = "images:debian/13", user = "debian", probe = "deb.debian.org" }
     ubuntu2404 = { image = "images:ubuntu/24.04", user = "ubuntu", probe = "archive.ubuntu.com" }
     ubuntu2604 = { image = "images:ubuntu/26.04", user = "ubuntu", probe = "archive.ubuntu.com" }
-    fedora     = { image = "images:fedora/44", user = "fedora", probe = "mirrors.fedoraproject.org" }
+    fedora     = { image = "images:fedora/45", user = "fedora", probe = "mirrors.fedoraproject.org" }
   }
   distro = local.distros[var.distro]
 

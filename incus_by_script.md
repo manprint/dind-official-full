@@ -18,7 +18,7 @@ Le misure citate vengono da un container `incus-env` (Incus 7.5.1, pool `dir`) s
 | `create_incus_debian13.sh` | `images:debian/13` | `debian` | systemd | `apt` | `docker-ce` dal repository ufficiale; ripiego `docker.io` + `docker-compose` |
 | `create_incus_ubuntu2404.sh` | `images:ubuntu/24.04` | `ubuntu` | systemd | `apt` | `docker-ce`; ripiego `docker.io` + `docker-compose-v2` |
 | `create_incus_ubuntu2604.sh` | `images:ubuntu/26.04` | `ubuntu` | systemd | `apt` | `docker-ce`; ripiego `docker.io` + `docker-compose-v2` |
-| `create_incus_fedora.sh` | `images:fedora/44` | `fedora` | systemd | `dnf` | `docker-ce`; ripiego `moby-engine` + `docker-compose` |
+| `create_incus_fedora.sh` | `images:fedora/45` | `fedora` | systemd | `dnf` | `docker-ce`; ripiego `moby-engine` + `docker-compose` |
 
 | Dove | Percorso |
 |---|---|

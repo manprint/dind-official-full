@@ -1,4 +1,4 @@
-FROM docker:29.9.3-dind
+FROM docker:29.10.0-dind
 
 # "current" resolves to the newest rclone at build time; CI resolves it once
 # and passes the same version to every platform build. Not RCLONE_VERSION:

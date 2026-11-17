@@ -16,7 +16,7 @@ set -euo pipefail
 # ---- instance ------------------------------------------------------------
 : "${INCUS_REMOTE:=}"                    # remote name; empty = the default remote
 : "${INSTANCE_NAME:=fedora-dev}"         # also the hostname
-: "${INSTANCE_IMAGE:=images:fedora/44}"
+: "${INSTANCE_IMAGE:=images:fedora/45}"
 : "${INSTANCE_PROFILES:=default}"        # space separated
 : "${INSTANCE_STORAGE_POOL:=}"           # empty = the profile's pool
 : "${INSTANCE_NETWORK:=}"                # empty = the profile's network

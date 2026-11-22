@@ -11,8 +11,6 @@ repo := env("IMAGE_REPO", `git remote get-url origin 2>/dev/null | sed -E 's/\.g
 image_full := registry / repo
 image_minimal := registry / repo + "-minimal"
 image_incus := registry / repo + "-incus"
-image_claude := registry / repo + "-claude"
-image_sbx := registry / repo + "-sbx"
 
 # Incus release to build from source: INCUS_VERSION from the environment, else
 # the ARG default in Dockerfile.incus (one place to bump it).
@@ -51,12 +49,6 @@ build-incus tag="latest": (_build_incus tag "")
 # Same, from scratch (no layer cache)
 build-incus-clean tag="latest": (_build_incus tag "--no-cache")
 
-# Build the Claude image (Dockerfile.claude, used by compose-claude.yml)
-build-claude tag="latest": (_build "Dockerfile.claude" image_claude tag "")
-
-# Build the sbx image (Dockerfile.sbx, used by docker-compose.sbx.bind.yml)
-build-sbx tag="latest": (_build "Dockerfile.sbx" image_sbx tag "")
-
 _build_incus tag flags:
     docker build --pull {{ flags }} -f Dockerfile.incus \
         {{ if incus_version != "" { "--build-arg INCUS_VERSION=" + incus_version } else { "" } }} \
@@ -77,19 +69,9 @@ smoke-full tag="latest" cycles="3":
 smoke-minimal tag="latest" cycles="3":
     tests/smoke.sh {{ image_minimal }}:{{ tag }} {{ cycles }}
 
-# Smoke-test the Claude image, then what its entrypoint adds (needs --privileged)
-smoke-claude tag="latest" cycles="3":
-    tests/smoke.sh {{ image_claude }}:{{ tag }} {{ cycles }}
-    tests/claude.sh {{ image_claude }}:{{ tag }}
-    tests/host-deny.sh {{ image_claude }}:{{ tag }}
-
 # Smoke-test the Incus image (needs --cap-add ALL, systempaths=unconfined, cgroup v2, /dev/fuse)
 smoke-incus tag="latest" cycles="3":
     tests/smoke.incus.sh {{ image_incus }}:{{ tag }} {{ cycles }}
-
-# Smoke-test the sbx image (needs --privileged; no sbx login, no KVM needed)
-smoke-sbx tag="latest" cycles="3":
-    tests/smoke.sbx.sh {{ image_sbx }}:{{ tag }} {{ cycles }}
 
 # Instance templates (needs internet): just templates-incus latest ubuntu2404 fedora ; no names = all five
 templates-incus tag="latest" *templates:
@@ -112,5 +94,3 @@ names:
     @echo "full:    {{ image_full }}"
     @echo "minimal: {{ image_minimal }}"
     @echo "incus:   {{ image_incus }}"
-    @echo "claude:  {{ image_claude }}"
-    @echo "sbx:     {{ image_sbx }}"

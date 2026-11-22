@@ -8,8 +8,6 @@ Immagini multi-arch `linux/amd64` + `linux/arm64` su GHCR. Funzionano nativament
 ghcr.io/manprint/dind-official-full           # completa
 ghcr.io/manprint/dind-official-full-minimal   # minimal
 ghcr.io/manprint/dind-official-full-incus     # Incus al posto di Docker, v. README_INCUS.md
-ghcr.io/manprint/dind-official-full-claude    # minimal + Claude Code e toolchain, v. Variante claude
-ghcr.io/manprint/dind-official-full-sbx       # Docker Sandboxes (sbx) accanto a dockerd, v. Variante sbx
 ```
 
 ## Download ultima release
@@ -48,38 +46,11 @@ wget -qO docker-compose.incus.yml https://github.com/manprint/dind-official-full
 docker compose -f docker-compose.incus.yml up -d
 ```
 
-Variante claude (v. [Variante claude](#variante-claude)), con gli script per il blocco di rete sul host:
-
-```bash
-for f in compose-claude.yml host-deny.sh claude-start.sh claude-stop.sh; do
-  curl -fsSLO https://github.com/manprint/dind-official-full/releases/latest/download/$f
-done
-chmod +x host-deny.sh claude-start.sh claude-stop.sh
-```
-
-Variante sbx (v. [Variante sbx](#variante-sbx)), con lo script che prepara le cartelle dei bind mount e la password del keyring:
-
-```bash
-for f in docker-compose.sbx.bind.yml docker-compose.sbx.bind.yml.sh; do
-  curl -fsSLO https://github.com/manprint/dind-official-full/releases/latest/download/$f
-done
-chmod +x docker-compose.sbx.bind.yml.sh && ./docker-compose.sbx.bind.yml.sh
-docker compose -f docker-compose.sbx.bind.yml up -d
-```
-
-```bash
-for f in docker-compose.sbx.bind.yml docker-compose.sbx.bind.yml.sh; do
-  wget -q https://github.com/manprint/dind-official-full/releases/latest/download/$f
-done
-chmod +x docker-compose.sbx.bind.yml.sh && ./docker-compose.sbx.bind.yml.sh
-docker compose -f docker-compose.sbx.bind.yml up -d
-```
-
 I compose della release hanno l'immagine fissata alla versione; ci sono anche `docker-compose.yml` (named volumes). Nei file scaricati `DIND_TAG` e `INCUS_TAG` non hanno effetto: per un'altra versione si scarica il file dalla release di quel tag.
 
 ## Avvio
 
-I compose non buildano: usano `ghcr.io/manprint/dind-official-full[-minimal]:${DIND_TAG:-latest}`, scaricata se manca in locale. Per usare un'immagine buildata a mano, `just build` (o `just build-full` / `just build-minimal`) la tagga con quei nomi e `latest`, e `docker compose up -d` la prende senza pull. Per la variante Incus: `just build-incus`, che tagga `ghcr.io/manprint/dind-official-full-incus:latest`. Per la variante sbx: `just build-sbx`, poi `./docker-compose.sbx.bind.yml.sh` prima del primo `up` (v. [Variante sbx](#variante-sbx)).
+I compose non buildano: usano `ghcr.io/manprint/dind-official-full[-minimal]:${DIND_TAG:-latest}`, scaricata se manca in locale. Per usare un'immagine buildata a mano, `just build` (o `just build-full` / `just build-minimal`) la tagga con quei nomi e `latest`, e `docker compose up -d` la prende senza pull. Per la variante Incus: `just build-incus`, che tagga `ghcr.io/manprint/dind-official-full-incus:latest`.
 
 ```bash
 docker compose up -d
@@ -230,8 +201,6 @@ Cose che il container non può risolvere da solo: si gestiscono fuori (host, VM,
 - **Filesystem di `DOCKER_DATA`**: deve poter fare da base a overlayfs (ext4, xfs con `ftype=1`, btrfs). NFS, CIFS, FUSE o un altro overlay non sono supportati. I named volume stanno nel `/var/lib/docker` dell'host e vanno bene.
 - **Un solo `dockerd` per data-root** (v. [Lock sul data-root](#lock-sul-data-root)): un secondo container sugli stessi dati resta fuori finché il primo non si ferma.
 - **Sicurezza**: `privileged: true` è obbligatorio per DinD e non è un confine di sicurezza (v. Note).
-- **Variante claude, `DENY_NETWORK`**: dentro il container blocca gli errori, non chi vuole uscire. `alpine` ha sudo senza password, quindi una shell o Claude Code con `--dangerously-skip-permissions` può togliere le regole (`sudo iptables -F`). Il blocco vero sta sul host: `sudo scripts/host-deny.sh compose.yml` copia le stesse reti sul bridge della rete compose (nome fisso, `DIND_BRIDGE_NAME`), dove il container non arriva. Non è persistente: va lanciato a mano dopo ogni boot e ogni cambio di `DENY_NETWORK`. Con `DENY_HOST_CHECK=1` (default in `compose-claude.yml`) il container non parte finché il host non applica la stessa lista; il controllo prova che lo script è girato dopo l'ultimo boot con quella lista, non che nessuno abbia svuotato il firewall del host nel frattempo. Con `privileged: true` root nel container può comunque raggiungere l'host e toglierlo: per un confine reale serve anche `runtime: sysbox-runc` al posto di `privileged`.
-- **Variante claude, `~/.claude.json`**: il container ne usa una copia presa dall'host a ogni avvio (un bind mount del file stesso restava sul file vecchio dopo il primo salvataggio dell'host). Le modifiche fatte sull'host (un nuovo server MCP, un login) arrivano al riavvio successivo; quelle fatte nel container restano nel container e la copia successiva le sovrascrive.
 
 ## Test
 
@@ -241,8 +210,6 @@ tests/smoke.sh dind-test 3
 ```
 
 Avvio, tini, `DIND_DNS` (voci IPv4 e IPv6 non valide scartate, le altre passate a `dockerd`), `DOCKER_DAEMON_INTERNAL_BIP`, dotfile, `HOME` e prompt, lock sul data-root, scadenza di 45 s con un daemon che non risponde, `docker stop`, chiave TLS corrotta, 3 cicli di `docker kill`/`docker start`, doppio SIGTERM, crash di `dockerd`, `kill -9` del PID 1 dall'host con la restart policy, ricreazione del container sugli stessi volumi. Richiede `--privileged`, non scarica immagini, rimuove tutto ciò che crea. La pipeline di release lo esegue su ogni immagine (`tests/smoke.incus.sh` per quella Incus) prima di pubblicarne i tag.
-
-Smoke test della variante sbx: `tests/smoke.sbx.sh IMAGE [CYCLES]` (`just smoke-sbx TAG`), anche in pipeline. Avvio sotto tini, dockerd e daemon sbx, keyring sbloccato con la password del file e di nuovo sbloccato dopo un crash di gnome-keyring, `memlock`, cartelle di sbx di `alpine`, script di backup, CYCLES `docker kill` con riavvio sugli stessi volumi, stop pulito con sbx fermato prima di dockerd. Non serve né `sbx login` né KVM: nessuna sandbox viene creata. La matrice di test manuale con le sandbox (11 agent, backup e restore con le strategie A, B e C, verifica 1:1) è in [README_SBX.md](README_SBX.md#test).
 
 Smoke test della variante Incus: `tests/smoke.incus.sh IMAGE [CYCLES]` (`just smoke-incus TAG`). Richiede un host con cgroup v2, `/dev/fuse` e `--cap-add ALL`; il crash test (SIGKILL al PID 1 dall'host) usa anche `--privileged`, come lo smoke Docker.
 
@@ -261,66 +228,6 @@ Smoke test della variante Incus: `tests/smoke.incus.sh IMAGE [CYCLES]` (`just sm
 - `tar` e `coreutils` GNU al posto degli applet busybox
 
 La versione minimal mantiene la logica DinD, l'utente `alpine`, sudo, rclone, fuse e la gestione dei bind mount, ma non installa Rust, GitHub CLI, toolchain C/C++, Node.js/npm, PM2, Java, Python, TypeScript o Angular CLI.
-
-## Variante claude
-
-L'immagine `ghcr.io/manprint/dind-official-full-claude` è la minimal più Claude Code e gli strumenti per lavorarci dalla shell: Node 24, Go, Rust, OpenJDK 25 con Maven e Gradle, PHP 8.5, toolchain C/C++, `gh`, `glab`, `aws-cli`, OpenTofu, `just`, `direnv`, `uv`, `tokensave` e `headroom`. `compose-claude.yml` monta i login e lo stato dell'host, così Claude Code, `gh`, `glab`, `aws` e git partono già autenticati.
-
-### Avvio e stop
-
-```bash
-touch ~/.claude.json          # deve esistere: altrimenti il container non parte
-./claude-start.sh             # host-deny.sh (sudo), poi docker compose up -d
-docker compose -f compose-claude.yml exec dind bash
-./claude-stop.sh              # docker compose down, poi le regole del host tolte (sudo)
-```
-
-Senza argomenti gli script usano `compose-claude.yml` accanto a loro (o nella cartella superiore, come nel repository); `./claude-start.sh mio-compose.yml` ne usa un altro. `host-deny.sh` deve stare nella stessa cartella degli script.
-
-Le regole sul host non sopravvivono al reboot: dopo ogni riavvio, e dopo ogni modifica di `DENY_NETWORK`, va rilanciato `./claude-start.sh` (o `sudo ./host-deny.sh compose-claude.yml`). Fino ad allora il container, se `DENY_NETWORK` non è vuoto, non parte: la restart policy lo riprova e nel log compare `DENY_NETWORK is not enforced on the host`.
-
-### Blocco di rete
-
-`DENY_NETWORK` elenca le reti che il container e i container al suo interno non possono raggiungere (es. `"192.168.1.0/24 100.64.0.0/10"`, anche separate da virgola). Le regole sono su due livelli:
-
-- **nel container** (`iptables` in `OUTPUT` e `DOCKER-USER`), messe a ogni avvio: fermano gli errori, ma root nel container (sudo senza password) le può togliere;
-- **sul host** (`host-deny.sh`): una catena `DIND-DENY-<bridge>` sul bridge della rete compose, che dal container non si raggiunge. Lo script legge `DENY_NETWORK` e il nome del bridge da `docker compose config`, quindi copia esattamente le reti del compose. Le risposte alle connessioni aperte dal host passano.
-
-`host-deny.sh` scrive la lista applicata in `/run/dind-env-deny/<bridge>`; il container la vede in sola lettura e, con `DENY_HOST_CHECK=1`, si rifiuta di partire se non coincide con il proprio `DENY_NETWORK`. Il controllo dice che lo script è girato dopo l'ultimo boot con quella lista, non che nessuno abbia svuotato il firewall del host nel frattempo.
-
-Con `privileged: true` root nel container può comunque arrivare all'host e togliere anche quelle regole. Per un confine vero serve [sysbox](https://github.com/nestybox/sysbox): nel compose `runtime: sysbox-runc` al posto di `privileged: true`, più il device per fuse/rclone:
-
-```yaml
-    runtime: sysbox-runc
-    devices:
-      - /dev/fuse
-```
-
-Sotto sysbox root nel container è un utente non privilegiato sul host, non vede i dischi del host e non carica moduli; i bind mount mantengono i proprietari. Smoke test e test della variante passano anche lì.
-
-Le reti interne non devono cadere in `DENY_NETWORK`, altrimenti le risposte ai container interni vengono scartate e restano senza rete: `DOCKER_DAEMON_INTERNAL_BIP` (es. `10.200.0.0/24`) e, per le reti create dentro (`docker network create`, compose interni), un `--default-address-pool` nel `command:`, es. `"--default-address-pool", "base=10.201.0.0/16,size=24"`. I pool di default di `dockerd` (`172.17–31.0.0/16`, `192.168.0.0/16`) si sovrappongono facilmente a reti LAN.
-
-### Variabili
-
-| Variabile | Default | Uso |
-| --- | --- | --- |
-| `DENY_NETWORK` | vuoto | reti bloccate, v. sopra; vuoto = nessun blocco e nessun controllo sul host |
-| `DENY_HOST_CHECK` | `1` | `1`: con `DENY_NETWORK` impostato parte solo se il host applica la stessa lista; `0`: solo le regole nel container |
-| `DIND_BRIDGE_NAME` | `br-dind-claude` | nome del bridge della rete compose, su cui lavora `host-deny.sh`; max 15 caratteri, uno per istanza (cambiarlo richiede `down` + `up`) |
-| `DIND_HOST_LINKS` | tokensave, headroom | coppie `HOST=CONTAINER`: percorsi del host citati nei settings, collegati agli strumenti dell'immagine |
-| `MCP_TIMEOUT` | `60000` | ms di avvio concessi ai server MCP (serena via `uvx` da git può superare i 30 s di default) |
-| `CLAUDE_DIR`, `CLAUDE_JSON`, `GH_CONFIG_DIR`, `GLAB_CONFIG_DIR`, `AWS_DIR`, `GIT_CREDENTIALS`, `GITCONFIG`, `GIT_HOOKS_DIR`, `TOKENSAVE_DIR`, `SERENA_DIR`, `HEADROOM_DIR` | percorsi in `$HOME` | percorsi sul host dei mount |
-
-Valgono anche le variabili della tabella generale (`DIND_NAME`, `DIND_TLS_PORT`, `DIND_NET_SUBNET`, …).
-
-### Stato del host
-
-- `~/.claude` in lettura e scrittura, anche al percorso del host (hook e status line lo citano per esteso).
-- `~/.claude.json` copiato nella home a ogni avvio: le modifiche del host (un server MCP, un login) arrivano al riavvio, quelle fatte nel container restano nel container.
-- `~/.config/gh`, `~/.config/glab-cli`, `~/.aws`: i token sono leggibili da tutto ciò che gira nel container, root compreso. Per tenere un login solo sul host basta togliere la riga dal compose.
-- `~/.git-credentials`, `~/.gitconfig` e la cartella degli hook git in sola lettura: `git config --global` dentro fallisce, la configurazione git si cambia sul host. Per `gh` con il token nel file (`gh auth login --insecure-storage`) e non nel keyring, altrimenti il container non lo vede.
-- `~/.tokensave`, `~/.serena`, `~/.headroom` condivisi con il host: tokensave e headroom usano database SQLite, quindi meglio una parte alla volta.
-- I `node` di nvm citati da settings, hook dei plugin e `~/.claude.json` vengono collegati a `/usr/bin/node` (il node di nvm è glibc e qui non gira).
 
 ## Variante Incus
 
@@ -348,17 +255,3 @@ incus launch images:debian/12 web -c limits.memory=512MiB -c limits.cpu=2
 | `INCUS_STOP_GRACE_PERIOD` | `120s` | `stop_grace_period` del container |
 
 Le altre variabili (`INCUS_ENV_*`, proxy, timeout di stop), la gestione di RAM e swap, i template per le istanze e la matrice dei test sono in [README_INCUS.md](README_INCUS.md). Per creare le istanze: [incus_by_script.md](incus_by_script.md) (script bash) e [incus_by_terraform.md](incus_by_terraform.md) (OpenTofu/Terraform).
-
-## Variante sbx
-
-`Dockerfile.sbx` (base Ubuntu 26.04, sbx v0.54.0) affianca a `dockerd` le **Docker Sandboxes** (`sbx`): microVM KVM per gli agent (claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell). Richiede un host Linux con `/dev/kvm` (non Docker Desktop né WSL2). Il pacchetto `docker-sbx` dentro l'immagine è proprietario di Docker: il suo uso è soggetto al [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement).
-
-```bash
-./docker-compose.sbx.bind.yml.sh              # cartelle dei bind mount e password del keyring
-docker compose -f docker-compose.sbx.bind.yml up -d
-docker exec -it dind-env-sbx sbx login        # login Docker di sbx, una volta per istanza
-```
-
-`docker-compose.sbx.bind.yml.sh [COMPOSE]` legge i percorsi da `docker compose config`, quindi rispetta `SBX_DATA`, `SBX_SECRETS_DIR` e `SBX_WORKSPACE` dall'ambiente o dal `.env` accanto al compose. Crea ogni cartella montata con l'utente che lo lancia (lasciate a Docker sarebbero di root) e genera `keyring_pass` in `SBX_SECRETS_DIR`. Si può rilanciare: non tocca le cartelle esistenti e non sostituisce mai una `keyring_pass` già presente, che serve ad aprire il keyring.
-
-Ogni componente (Docker, home, stato sbx, cache, config, keyring, workspace) ha il suo bind mount sotto `SBX_DATA`; la password del keyring sta fuori, in `SBX_SECRETS_DIR`. Backup e migrazione con gli script in `sbx-backup-scripts/` (A: una sandbox, B: stato sbx a freddo, C: tutto `SBX_DATA` con verifica 1:1). Dettagli, limiti e matrice dei test in [README_SBX.md](README_SBX.md).

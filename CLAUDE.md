@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Docker-in-Docker development image built on `docker:29.10.0-dind`. No application code — the deliverables are three Dockerfiles, three shell entrypoints, three dotfiles, four compose files, smoke tests, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full`, `...-full-minimal` and `...-full-incus`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
+Docker-in-Docker development image built on `docker:29.10.1-dind`. No application code — the deliverables are three Dockerfiles, three shell entrypoints, three dotfiles, four compose files, smoke tests, and a GitHub Actions release pipeline. Published multi-arch (amd64/arm64) to GHCR as `ghcr.io/manprint/dind-official-full`, `...-full-minimal` and `...-full-incus`. It isolates staging environments, so coming back unattended after a hard stop (power loss, host crash) is a hard requirement, not a nicety.
 
 README is in Italian; container locale/timezone are `it_IT.UTF-8` / `Europe/Rome`.
 
